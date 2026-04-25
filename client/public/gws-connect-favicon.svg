@@ -1,0 +1,16 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="gwsBubble" x1="16" y1="16" x2="112" y2="112"
+            gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#DC2626" />
+            <stop offset="1" stop-color="#7F1D1D" />
+        </linearGradient>
+    </defs>
+    <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#gwsBubble)" />
+    <path
+        d="M34 42C34 36.4772 38.4772 32 44 32H84C89.5228 32 94 36.4772 94 42V68C94 73.5228 89.5228 78 84 78H58L44 92V78H44C38.4772 78 34 73.5228 34 68V42Z"
+        fill="white" />
+    <circle cx="52" cy="55" r="5" fill="#DC2626" />
+    <circle cx="64" cy="55" r="5" fill="#DC2626" />
+    <circle cx="76" cy="55" r="5" fill="#DC2626" />
+</svg>

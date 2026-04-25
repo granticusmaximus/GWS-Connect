@@ -1,0 +1,29 @@
+services:
+  server:
+    build:
+      context: ./server
+    env_file:
+      - ./server/.env
+    environment:
+      PORT: 5176
+      CLIENT_URL: "http://localhost:5157,https://connect.gwsapp.net"
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_SUBJECT: ${VAPID_SUBJECT}
+      GIPHY_API_KEY: ${GIPHY_API_KEY}
+    volumes:
+      - ./server/data:/app/data
+      - ./server/uploads:/app/uploads
+    ports:
+      - "5176:5176"
+
+  client:
+    build:
+      context: ./client
+      args:
+        VITE_API_URL: /api
+        VITE_SOCKET_URL: /
+    depends_on:
+      - server
+    ports:
+      - "5157:80"

@@ -1,0 +1,61 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start GWS Connect Server",
+      "type": "shell",
+      "command": "cd /Users/grantwatson/Desktop/Development/React/GWS-Connect/server && npm run dev",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^(.*)$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*starting.*$",
+          "endsPattern": "^.*Server running.*$"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "server"
+      }
+    },
+    {
+      "label": "Start GWS Connect Client",
+      "type": "shell",
+      "command": "cd /Users/grantwatson/Desktop/Development/React/GWS-Connect/client && npm run dev",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^(.*)$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*VITE.*$",
+          "endsPattern": "^.*Local:.*$"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "client"
+      }
+    },
+    {
+      "label": "Start GWS Connect (Client + Server)",
+      "dependsOn": [
+        "Start GWS Connect Server",
+        "Start GWS Connect Client"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

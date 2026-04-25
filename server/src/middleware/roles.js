@@ -1,0 +1,118 @@
+import db from '../database.js';
+
+// Check if user is admin
+export const requireAdmin = (req, res, next) => {
+	const stmt = db.prepare('SELECT role FROM users WHERE id = ?');
+	const user = stmt.get(req.user.id);
+
+	if (!user || user.role !== 'admin') {
+		console.warn(
+			'Admin check failed:',
+			req.user?.id,
+			user?.role || 'missing',
+			req.method,
+			req.originalUrl,
+		);
+		return res.status(403).json({ message: 'Admin privileges required' });
+	}
+
+	next();
+};
+
+// Check if user is manager or admin
+export const requireManagerOrAdmin = (req, res, next) => {
+	const stmt = db.prepare('SELECT role FROM users WHERE id = ?');
+	const user = stmt.get(req.user.id);
+
+	if (!user || (user.role !== 'manager' && user.role !== 'admin')) {
+		return res
+			.status(403)
+			.json({ message: 'Manager or admin privileges required' });
+	}
+
+	req.userRole = user.role;
+	next();
+};
+
+// Check if user is manager of specific channel or admin
+export const requireChannelManagerOrAdmin = (channelIdParam = 'channelId') => {
+	return (req, res, next) => {
+		const channelId = req.params[channelIdParam] || req.body.channelId;
+
+		if (!channelId) {
+			return res.status(400).json({ message: 'Channel ID required' });
+		}
+
+		// Check user role
+		const userStmt = db.prepare('SELECT role FROM users WHERE id = ?');
+		const user = userStmt.get(req.user.id);
+
+		if (!user) {
+			return res.status(404).json({ message: 'User not found' });
+		}
+
+		// Admins can manage any channel
+		if (user.role === 'admin') {
+			req.userRole = 'admin';
+			return next();
+		}
+
+		// Check if user is manager of this specific channel
+		const managerStmt = db.prepare(
+			'SELECT 1 FROM channel_managers WHERE channelId = ? AND userId = ?',
+		);
+		const isManager = managerStmt.get(channelId, req.user.id);
+
+		if (!isManager) {
+			return res.status(403).json({
+				message: 'You must be a manager of this channel or an admin',
+			});
+		}
+
+		req.userRole = 'manager';
+		next();
+	};
+};
+
+// Check if user can send messages in channel (not banned/muted)
+export const canSendMessage = (channelId, userId) => {
+	// Check if banned
+	const banStmt = db.prepare(
+		'SELECT 1 FROM channel_bans WHERE channelId = ? AND userId = ?',
+	);
+	const isBanned = banStmt.get(channelId, userId);
+
+	if (isBanned) {
+		return { allowed: false, reason: 'You are banned from this channel' };
+	}
+
+	// Check if muted
+	const muteStmt = db.prepare(
+		"SELECT expiresAt FROM channel_mutes WHERE channelId = ? AND userId = ? AND expiresAt > datetime('now')",
+	);
+	const mute = muteStmt.get(channelId, userId);
+
+	if (mute) {
+		return {
+			allowed: false,
+			reason: `You are muted until ${new Date(mute.expiresAt).toLocaleString()}`,
+		};
+	}
+
+	return { allowed: true };
+};
+
+// Check user role
+export const getUserRole = (userId) => {
+	const stmt = db.prepare('SELECT role FROM users WHERE id = ?');
+	const user = stmt.get(userId);
+	return user?.role || 'user';
+};
+
+// Check if user is manager of channel
+export const isChannelManager = (channelId, userId) => {
+	const stmt = db.prepare(
+		'SELECT 1 FROM channel_managers WHERE channelId = ? AND userId = ?',
+	);
+	return !!stmt.get(channelId, userId);
+};
