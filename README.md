@@ -1,199 +1,132 @@
 # GWS Connect
 
-A full-featured instant messaging application similar to Discord, Slack, and Mattermost. Built with React, Node.js, Socket.io, and MongoDB.
+A privacy-first instant messaging application similar to Discord and Slack. Built with React, Node.js, Socket.io, and SQLite.
 
 ## Features
 
-- 🔐 **Authentication** - Secure JWT-based login and registration
-- 💬 **Real-time Chat** - Instant messaging in channels and direct messages
-- 🎥 **Audio/Video Calls** - Group calls in channels and 1-on-1 calls in DMs using WebRTC
+- 🔐 **Authentication** - JWT-based login/registration with account lockout after repeated failed attempts
+- 💬 **Real-time Chat** - Channels, direct messages, threaded replies, reactions, mentions, polls
+- 🎥 **Audio/Video Calls** - Mesh WebRTC voice/video calls and screen sharing in channels and DMs
+- 📌 **Pinned Messages & Search** - Pin important messages per conversation; search message history
+- 🟢 **Presence** - Online/idle status indicators
 - 📎 **File Sharing** - Drag-and-drop file uploads for all media types
 - 👤 **Rich User Profiles** - Customizable profiles with avatar, banner, bio, interests, and social links
-- 🎨 **Theme Support** - Light and dark mode with red/maroon color palette
-- ⚡ **Real-time Updates** - Powered by Socket.io for instant communication
+- 🎨 **Theme Support** - Light and dark mode
+- ⚡ **Real-time Updates** - Powered by Socket.io
 
 ## Tech Stack
 
 ### Frontend
 
-- React 18 with TypeScript
-- Vite for fast builds
+- React 19 with TypeScript
+- Vite for builds
 - Tailwind CSS for styling
 - Zustand for state management
 - Socket.io-client for real-time communication
-- Simple-peer for WebRTC audio/video
+- Native WebRTC (`RTCPeerConnection`) for audio/video calls
 - React Dropzone for file uploads
 - React Router for navigation
 
 ### Backend
 
 - Node.js with Express
-- Socket.io for WebSocket communication
-- MongoDB with Mongoose ODM
+- Socket.io for WebSocket communication and call signaling
+- better-sqlite3 (SQLite) for storage
 - JWT for authentication
 - Bcrypt for password hashing
+- Helmet + express-rate-limit for hardening
 
 ## Prerequisites
 
-Before running this application, make sure you have the following installed:
-
 - Node.js (v18 or higher)
-- npm or yarn package manager
+- npm
 
 ## Installation
 
-1. **Clone the repository**
+1. **Install dependencies**
 
    ```bash
-   cd /path/to/GWS-Connect
+   cd client && npm install
+   cd ../server && npm install
    ```
 
-2. **Install dependencies**
+2. **Configure environment variables**
 
-   For the client:
-
-   ```bash
-   cd client
-   npm install
-   ```
-
-   For the server:
-
-   ```bash
-   cd server
-   npm install
-   ```
-
-3. **Configure environment variables**
-
-   Client (.env in client directory):
+   Client (`client/.env`, copy from `client/.env.example`):
 
    ```
-   VITE_API_URL=http://localhost:3001/api
-   VITE_SOCKET_URL=http://localhost:3001
+   VITE_API_URL=/api
+   VITE_SOCKET_URL=
+   VITE_WEBRTC_STUN_URLS=stun:stun.l.google.com:19302
+   VITE_WEBRTC_TURN_URLS=
+   VITE_WEBRTC_TURN_USERNAME=
+   VITE_WEBRTC_TURN_CREDENTIAL=
    ```
 
-   Server (.env in server directory):
+   Server (`server/.env`, copy from `server/.env.example`):
 
    ```
    PORT=3001
-   MONGODB_URI=mongodb://localhost:27017/gws-connect
+   DB_PATH=./data/gws-connect.db
    JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
    CLIENT_URL=http://localhost:5173
+   VAPID_PUBLIC_KEY=
+   VAPID_PRIVATE_KEY=
    ```
 
-4. **Start MongoDB**
-
-   Make sure MongoDB is running on your system:
-
-   ```bash
-   # macOS with Homebrew
-   brew services start mongodb-community
-
-   # Linux with systemd
-   sudo systemctl start mongod
-
-   # Or run manually
-   mongod
-   ```
+   A TURN server (`VITE_WEBRTC_TURN_URLS`) is required for calls to work reliably across NATs/firewalls in production; STUN alone is enough for local development.
 
 ## Running the Application
 
-You'll need to run both the client and server concurrently. The SQLite database will be automatically created on first run.
-
-### Terminal 1 - Start the backend server:
+The SQLite database is created automatically on first run.
 
 ```bash
-cd server
-npm run dev
+npm run dev   # runs client + server together (from repo root)
 ```
 
-The server will start on http://localhost:3001
-
-### Terminal 2 - Start the frontend client:
+Or separately:
 
 ```bash
-cd client
-npm run dev
+cd server && npm run dev   # http://localhost:3001
+cd client && npm run dev   # http://localhost:5173
 ```
-
-The client will start on http://localhost:5173
 
 ## Usage
 
-1. Open your browser and navigate to http://localhost:5173
-2. Create a new account using the registration page
-3. Log in with your credentials
-4. Start chatting in channels or create direct messages
-5. Click the video/audio icons to start calls
-6. Drag and drop files to share them in conversations
-7. Visit your profile to customize your information
-8. Toggle between light and dark themes using the theme switcher
+1. Open http://localhost:5173 and register an account
+2. Create or join channels, or start a direct message
+3. Click the Voice/Video buttons in a conversation header to start a call
+4. Use the Pinned tab and the search icon in the header to find messages
+5. Drag and drop files to share them in conversations
+6. Visit your profile to customize your information
 
 ## Project Structure
 
 ```
 GWS-Connect/
 ├── client/                 # React frontend
-│   ├── src/
-│   │   ├── components/    # Reusable UI components
-│   │   ├── pages/         # Page components
-│   │   ├── store/         # Zustand state management
-│   │   ├── App.tsx        # Main app component
-│   │   └── main.tsx       # Entry point
-│   ├── public/            # Static assets
-│   └── package.json
+│   └── src/
+│       ├── components/    # Reusable UI components
+│       ├── pages/         # Page components
+│       ├── store/         # Zustand state management (chat, call, auth, ...)
+│       └── utils/         # E2EE, mentions, formatting helpers
 │
 ├── server/                # Node.js backend
-│   ├── src/
-│   │   ├── models/       # MongoDB models
-│   │   ├── routes/       # Express routes
-│   │   ├── middleware/   # Custom middleware
-│   │   └── index.js      # Server entry point
-│   └── package.json
+│   └── src/
+│       ├── models/        # SQLite data access
+│       ├── routes/        # Express routes
+│       ├── middleware/    # Auth/role middleware
+│       └── index.js       # Server entry point + Socket.io handlers
 │
-└── README.md
+└── electron/               # Desktop app shell
 ```
 
-## Future Plans
+## Known Gaps
 
-- 📱 React Native mobile apps for iOS and Android
-- ☁️ Cloudflare tunnel hosting on custom port
-- 🔔 Push notifications
-- 🔍 Advanced search functionality
-- 📊 Message analytics
-- 🎮 Rich media embeds
-- 🤖 Bot integration support
-
-## Color Scheme
-
-The application uses a red-based color palette:
-
-- **Light Mode**: Bright reds (#DC2626, #B91C1C, #991B1B)
-- **Dark Mode**: Maroon tones (#7F1D1D, #450A0A)
-
-## Development Guidelines
-
-- Use TypeScript for type safety
-- Follow React best practices and hooks patterns
-- Use functional components throughout
-- Implement proper error handling
-- Keep components modular and reusable
-- Follow RESTful API conventions
-- Use Socket.io events for real-time features
-
-## Contributing
-
-This is a personal project, but suggestions and feedback are welcome!
+- Calls use a peer-to-peer mesh topology (no SFU), so large group calls won't scale well past a handful of participants
+- End-to-end encryption is implemented for DMs (ECDH + AES-GCM) but not yet enforced for channels
+- No automated test suite yet
 
 ## License
 
 Private project - All rights reserved
-
-## Support
-
-For questions or issues, please contact the development team.
-
----
-
-Built with ❤️ for seamless communication

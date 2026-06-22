@@ -1,18 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useAuthStore } from '../store/authStore'
 import { useChatStore } from '../store/chatStore'
 import { useNotificationStore, type InAppNotification } from '../store/notificationStore'
 import { useThemeStore } from '../store/themeStore'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { 
+import {
   ArrowRightOnRectangleIcon,
   BellIcon,
   SunIcon,
   MoonIcon,
   HomeIcon,
   UserGroupIcon,
-  Bars3Icon
+  Bars3Icon,
+  MagnifyingGlassIcon
 } from '@heroicons/react/24/outline'
+import type { Message } from '../store/chatStore'
 
 interface HeaderProps {
   onMenuClick?: () => void
@@ -21,13 +23,26 @@ interface HeaderProps {
 
 export default function Header({ onMenuClick, isSidebarOpen = false }: HeaderProps) {
   const { user, logout, updateProfile } = useAuthStore()
-  const { setActiveChannel, setActiveDM, setMessageFocusTarget, loadMessageById } = useChatStore()
+  const {
+    setActiveChannel,
+    setActiveDM,
+    setMessageFocusTarget,
+    loadMessageById,
+    activeChannel,
+    activeDM,
+    searchMessages,
+  } = useChatStore()
   const { notifications, markNotificationRead } = useNotificationStore()
   const { isDarkMode, toggleTheme } = useThemeStore()
   const navigate = useNavigate()
   const location = useLocation()
   const [isNotificationMenuOpen, setIsNotificationMenuOpen] = useState(false)
   const notificationMenuRef = useRef<HTMLDivElement | null>(null)
+  const [isSearchOpen, setIsSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<Message[]>([])
+  const [isSearching, setIsSearching] = useState(false)
+  const searchMenuRef = useRef<HTMLDivElement | null>(null)
 
   const handleLogout = () => {
     logout()
@@ -65,11 +80,15 @@ export default function Header({ onMenuClick, isSidebarOpen = false }: HeaderPro
       if (!notificationMenuRef.current?.contains(event.target as Node)) {
         setIsNotificationMenuOpen(false)
       }
+      if (!searchMenuRef.current?.contains(event.target as Node)) {
+        setIsSearchOpen(false)
+      }
     }
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setIsNotificationMenuOpen(false)
+        setIsSearchOpen(false)
       }
     }
 
@@ -98,6 +117,34 @@ export default function Header({ onMenuClick, isSidebarOpen = false }: HeaderPro
     navigate('/dashboard')
     void markNotificationRead(notification.id)
     await loadMessageById(notification.messageId)
+  }
+
+  const activeChatTarget = activeChannel
+    ? { chatType: 'channel' as const, chatId: activeChannel }
+    : activeDM
+      ? { chatType: 'dm' as const, chatId: activeDM }
+      : null
+
+  const handleSearchSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!activeChatTarget || searchQuery.trim().length < 2) return
+
+    setIsSearching(true)
+    const results = await searchMessages(activeChatTarget.chatType, activeChatTarget.chatId, searchQuery.trim())
+    setSearchResults(results)
+    setIsSearching(false)
+  }
+
+  const handleSearchResultClick = async (message: Message) => {
+    if (!activeChatTarget) return
+    setMessageFocusTarget({
+      chatType: activeChatTarget.chatType,
+      chatId: activeChatTarget.chatId,
+      messageId: message.id,
+    })
+    setIsSearchOpen(false)
+    navigate('/dashboard')
+    await loadMessageById(message.id)
   }
 
   const formatNotificationTime = (value: string) => {
@@ -182,6 +229,69 @@ export default function Header({ onMenuClick, isSidebarOpen = false }: HeaderPro
               Friends
             </span>
           </button>
+
+          <div className="relative flex-shrink-0" ref={searchMenuRef}>
+            <button
+              type="button"
+              onClick={() => setIsSearchOpen((current) => !current)}
+              disabled={!activeChatTarget}
+              className={`${getNavButtonClass(isSearchOpen)} min-h-12 sm:min-h-auto tap-highlight-none disabled:opacity-40`}
+              title={activeChatTarget ? 'Search messages' : 'Select a chat to search'}
+              aria-label="Search messages"
+              aria-expanded={isSearchOpen}
+            >
+              <MagnifyingGlassIcon className={`w-6 h-6 flex-shrink-0 ${getNavIconClass(isSearchOpen)}`} />
+              <span className={`hidden xl:inline text-sm font-medium ${getNavTextClass(isSearchOpen)}`}>
+                Search
+              </span>
+            </button>
+
+            {isSearchOpen && (
+              <div className="absolute right-0 top-full z-50 mt-3 w-[22rem] max-w-[calc(100vw-2rem)]">
+                <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+                  <form onSubmit={handleSearchSubmit} className="flex items-center gap-2 border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.target.value)}
+                      placeholder="Search this conversation..."
+                      autoFocus
+                      className="flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm text-gray-900 outline-none focus:border-primary-400 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+                    />
+                    <button
+                      type="submit"
+                      className="rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-700"
+                    >
+                      Go
+                    </button>
+                  </form>
+                  <div className="max-h-96 overflow-y-auto">
+                    {isSearching ? (
+                      <div className="px-4 py-6 text-sm text-gray-500 dark:text-gray-400">Searching...</div>
+                    ) : searchResults.length === 0 ? (
+                      <div className="px-4 py-6 text-sm text-gray-500 dark:text-gray-400">No results yet</div>
+                    ) : (
+                      searchResults.map((message) => (
+                        <button
+                          key={message.id}
+                          type="button"
+                          onClick={() => void handleSearchResultClick(message)}
+                          className="flex w-full flex-col items-start gap-0.5 border-b border-gray-100 px-4 py-3 text-left transition hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-gray-800/80"
+                        >
+                          <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                            {message.senderName}
+                          </span>
+                          <span className="truncate text-sm text-gray-600 dark:text-gray-300">
+                            {message.content}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
 
           <div className="relative flex-shrink-0" ref={notificationMenuRef}>
             <button

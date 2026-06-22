@@ -4,6 +4,8 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import './database.js';
 import authRoutes from './routes/auth.js';
@@ -97,6 +99,12 @@ app.set('io', io);
 
 // Middleware
 app.use(
+	helmet({
+		// Static assets and the desktop bundle are served cross-origin from file://
+		crossOriginResourcePolicy: { policy: 'cross-origin' },
+	}),
+);
+app.use(
 	cors({
 		origin: corsOrigin,
 		credentials: true,
@@ -104,6 +112,25 @@ app.use(
 );
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+const apiRateLimiter = rateLimit({
+	windowMs: 15 * 60 * 1000,
+	limit: 300,
+	standardHeaders: true,
+	legacyHeaders: false,
+});
+app.use('/api', apiRateLimiter);
+
+const authRateLimiter = rateLimit({
+	windowMs: 15 * 60 * 1000,
+	limit: 20,
+	standardHeaders: true,
+	legacyHeaders: false,
+	message: { message: 'Too many attempts, please try again later' },
+});
+app.use('/api/auth/login', authRateLimiter);
+app.use('/api/auth/register', authRateLimiter);
+app.use('/api/auth/forgot-password-request', authRateLimiter);
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -138,6 +165,46 @@ app.use(errorLoggingMiddleware);
 // Socket.io connection handling
 const onlineUsers = new Map();
 const onlineSocketUsers = new Map();
+const userPresence = new Map(); // userId -> 'online' | 'idle'
+
+// WebRTC call sessions, keyed by callId.
+// callId is `channel:<channelId>` for channel calls or `dm:<sortedUserIdA>-<sortedUserIdB>` for DM calls.
+// participants: Map<userId, { username, withVideo }>
+const callSessions = new Map();
+
+const buildDmCallId = (userIdA, userIdB) =>
+	`dm:${[String(userIdA), String(userIdB)].sort().join('-')}`;
+
+const resolveCallId = ({ chatType, chatId, currentUserId }) =>
+	chatType === 'channel' ? `channel:${chatId}` : buildDmCallId(currentUserId, chatId);
+
+const getOrCreateCallSession = (callId, chatType, chatId) => {
+	let session = callSessions.get(callId);
+	if (!session) {
+		session = { chatType, chatId: String(chatId), participants: new Map() };
+		callSessions.set(callId, session);
+	}
+	return session;
+};
+
+const serializeParticipants = (session) =>
+	Array.from(session.participants.entries()).map(([userId, info]) => ({
+		userId,
+		username: info.username,
+		withVideo: info.withVideo,
+	}));
+
+const broadcastPresence = () => {
+	io.emit(
+		'presence-update',
+		Object.fromEntries(
+			Array.from(onlineUsers.keys()).map((userId) => [
+				userId,
+				userPresence.get(userId) || 'online',
+			]),
+		),
+	);
+};
 
 const buildTypingPayload = ({ socket, channelId = null, chatId = null }) => {
 	const user = findUserById(socket.user.id);
@@ -261,7 +328,9 @@ io.on('connection', async (socket) => {
 		id: socket.user.id,
 		username: socket.user.username,
 	});
+	userPresence.set(socket.user.id, 'online');
 	io.emit('online-users', Array.from(onlineUsers.keys()));
+	broadcastPresence();
 
 	// Join user's personal room
 	socket.join(String(socket.user.id));
@@ -1154,6 +1223,68 @@ io.on('connection', async (socket) => {
 		}
 	});
 
+	// Handle pin/unpin
+	socket.on('message-pin-toggle', async (data, callback) => {
+		const { messageId } = data || {};
+
+		try {
+			const { getMessageById, togglePinMessage } = await import('./models/Message.js');
+			const message = getMessageById(messageId);
+			if (!message) {
+				callback?.({ ok: false, message: 'Message not found' });
+				return;
+			}
+
+			if (message.channelId) {
+				const access = resolveChannelAccess(message.channelId, socket.user.id);
+				if (!access.allowed) {
+					callback?.({ ok: false, message: access.reason });
+					return;
+				}
+			} else if (message.recipientId) {
+				if (
+					String(message.recipientId) !== String(socket.user.id) &&
+					String(message.senderId) !== String(socket.user.id)
+				) {
+					callback?.({ ok: false, message: 'Access denied' });
+					return;
+				}
+			}
+
+			const result = togglePinMessage(messageId, socket.user.id);
+			if (!result) {
+				callback?.({ ok: false, message: 'Message not found' });
+				return;
+			}
+
+			const update = {
+				messageId: messageId.toString(),
+				isPinned: result.isPinned,
+				pinnedAt: result.pinnedAt,
+			};
+
+			if (message.channelId) {
+				io.to(`channel:${message.channelId}`).emit('message-pin-update', update);
+			} else if (message.recipientId) {
+				io.to(String(message.recipientId)).emit('message-pin-update', update);
+				io.to(String(message.senderId)).emit('message-pin-update', update);
+			}
+
+			callback?.({ ok: true, ...update });
+		} catch (error) {
+			await logSocketError(error, {
+				file: 'index.js',
+				function: 'socket.on(message-pin-toggle)',
+				socketId: socket.id,
+				userId: socket.user.id,
+				eventName: 'message-pin-toggle',
+				operation: 'Toggling pinned state and broadcasting update',
+				additionalInfo: { username: socket.user.username, messageId },
+			});
+			callback?.({ ok: false, message: 'Failed to update pin' });
+		}
+	});
+
 	// Handle message reactions
 	socket.on('reaction-toggle', async (data, callback) => {
 		const { messageId, reaction } = data || {};
@@ -1262,12 +1393,139 @@ io.on('connection', async (socket) => {
 		console.log('File message received:', data);
 	});
 
+	// Handle WebRTC call signaling
+	socket.on('call:join', async (data, callback) => {
+		const { chatType, chatId, withVideo = false } = data || {};
+
+		try {
+			if (chatType !== 'channel' && chatType !== 'dm') {
+				callback?.({ ok: false, message: 'Invalid chat type' });
+				return;
+			}
+
+			if (chatType === 'channel') {
+				const access = resolveChannelAccess(chatId, socket.user.id);
+				if (!access.allowed) {
+					callback?.({ ok: false, message: access.reason });
+					return;
+				}
+			}
+
+			const callId = resolveCallId({ chatType, chatId, currentUserId: socket.user.id });
+			const isNewSession = !callSessions.has(callId);
+			const session = getOrCreateCallSession(callId, chatType, chatId);
+
+			const existingParticipants = serializeParticipants(session);
+
+			session.participants.set(String(socket.user.id), {
+				username: socket.user.username,
+				withVideo: Boolean(withVideo),
+			});
+			socket.join(`call:${callId}`);
+
+			socket.to(`call:${callId}`).emit('call:peer-joined', {
+				callId,
+				userId: String(socket.user.id),
+				username: socket.user.username,
+				withVideo: Boolean(withVideo),
+			});
+
+			if (chatType === 'dm' && isNewSession) {
+				io.to(String(chatId)).emit('call:incoming', {
+					callId,
+					chatType,
+					chatId: String(socket.user.id),
+					fromUserId: String(socket.user.id),
+					fromUsername: socket.user.username,
+					withVideo: Boolean(withVideo),
+				});
+			}
+
+			callback?.({ ok: true, callId, participants: existingParticipants });
+		} catch (error) {
+			await logSocketError(error, {
+				file: 'index.js',
+				function: 'socket.on(call:join)',
+				socketId: socket.id,
+				userId: socket.user.id,
+				eventName: 'call:join',
+				operation: 'Joining a call session',
+				additionalInfo: { username: socket.user.username, chatType, chatId },
+			});
+			callback?.({ ok: false, message: 'Failed to join call' });
+		}
+	});
+
+	socket.on('call:signal', (data) => {
+		const { callId, toUserId, signal } = data || {};
+		if (!callId || !toUserId || !signal) return;
+
+		io.to(String(toUserId)).emit('call:signal', {
+			callId,
+			fromUserId: String(socket.user.id),
+			signal,
+		});
+	});
+
+	socket.on('call:leave', (data) => {
+		const { callId } = data || {};
+		const session = callSessions.get(callId);
+		if (!session) return;
+
+		session.participants.delete(String(socket.user.id));
+		socket.leave(`call:${callId}`);
+		socket.to(`call:${callId}`).emit('call:peer-left', {
+			callId,
+			userId: String(socket.user.id),
+		});
+
+		if (session.participants.size === 0) {
+			callSessions.delete(callId);
+		}
+	});
+
+	socket.on('call:decline', (data) => {
+		const { callId, toUserId } = data || {};
+		if (!callId || !toUserId) return;
+
+		io.to(String(toUserId)).emit('call:declined', {
+			callId,
+			userId: String(socket.user.id),
+		});
+		callSessions.delete(callId);
+	});
+
+	// Handle presence updates (idle/online) from client activity tracking
+	socket.on('presence-set', (status) => {
+		if (status !== 'online' && status !== 'idle') {
+			return;
+		}
+		userPresence.set(socket.user.id, status);
+		broadcastPresence();
+	});
+
 	// Handle disconnection
 	socket.on('disconnect', () => {
 		console.log('User disconnected:', socket.user.id);
 		onlineUsers.delete(socket.user.id);
 		onlineSocketUsers.delete(socket.id);
+		userPresence.delete(socket.user.id);
 		io.emit('online-users', Array.from(onlineUsers.keys()));
+		broadcastPresence();
+
+		for (const [callId, session] of callSessions.entries()) {
+			if (!session.participants.has(String(socket.user.id))) continue;
+
+			session.participants.delete(String(socket.user.id));
+			io.to(`call:${callId}`).emit('call:peer-left', {
+				callId,
+				userId: String(socket.user.id),
+			});
+
+			if (session.participants.size === 0) {
+				callSessions.delete(callId);
+			}
+		}
 	});
 });
 

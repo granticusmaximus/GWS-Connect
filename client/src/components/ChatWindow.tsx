@@ -3,6 +3,7 @@ import { useDropzone } from 'react-dropzone'
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import { useChatStore, type Message as ChatMessage, type ReplyContext } from '../store/chatStore'
+import { useCallStore } from '../store/callStore'
 import { usePreferencesStore } from '../store/preferencesStore'
 import { API_URL } from '../config/runtime'
 import { formatDate, formatTime } from '../utils/dateFormat'
@@ -25,6 +26,8 @@ import {
   HashtagIcon,
   MagnifyingGlassIcon,
   PencilIcon,
+  PhoneIcon,
+  VideoCameraIcon,
   UserGroupIcon,
   UserPlusIcon,
   XMarkIcon
@@ -215,10 +218,13 @@ export default function ChatWindow() {
     sendMessage, 
     toggleReaction, 
     editMessage, 
-    deleteMessage, 
+    deleteMessage,
     archiveMessage,
+    togglePinMessage,
+    loadPinnedMessages,
     markConversationVisited,
   } = useChatStore()
+  const { activeCallId, isConnecting, startCall } = useCallStore()
   const user = useAuthStore((state) => state.user)
   const authToken = useAuthStore((state) => state.token) || localStorage.getItem('token')
   const timeFormat = usePreferencesStore((state) => state.timeFormat)
@@ -226,7 +232,8 @@ export default function ChatWindow() {
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [showEditModal, setShowEditModal] = useState(false)
-  const [activeTab, setActiveTab] = useState<'messages' | 'files' | 'members'>('messages')
+  const [activeTab, setActiveTab] = useState<'messages' | 'files' | 'members' | 'pinned'>('messages')
+  const [pinnedMessages, setPinnedMessages] = useState<ChatMessage[]>([])
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [pendingName, setPendingName] = useState('')
   const [pendingMessage, setPendingMessage] = useState('')
@@ -378,6 +385,15 @@ export default function ChatWindow() {
     if (activeTab !== 'members' || !activeChannel) return
     void loadActiveChannelMembers(activeChannel)
   }, [activeChannel, activeTab, loadActiveChannelMembers])
+
+  useEffect(() => {
+    if (activeTab !== 'pinned') return
+    if (activeChannel) {
+      void loadPinnedMessages('channel', activeChannel).then(setPinnedMessages)
+    } else if (activeDM) {
+      void loadPinnedMessages('dm', activeDM).then(setPinnedMessages)
+    }
+  }, [activeTab, activeChannel, activeDM, loadPinnedMessages])
 
   useEffect(() => {
     if (!socket) return
@@ -1169,6 +1185,20 @@ export default function ChatWindow() {
                         </button>
                       )}
 
+                      {hoveredMessageId === message.id && !isDeleted && !isEditing && (
+                        <button
+                          type="button"
+                          onClick={() => void togglePinMessage(message.id)}
+                          className={`rounded-full border px-3 py-1 text-xs transition ${
+                            message.isPinned
+                              ? 'border-amber-400 bg-amber-50 text-amber-700 dark:border-amber-500 dark:bg-amber-900/30 dark:text-amber-200'
+                              : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
+                          }`}
+                        >
+                          {message.isPinned ? 'Unpin' : 'Pin'}
+                        </button>
+                      )}
+
                       {hoveredMessageId === message.id && (
                         <button
                           type="button"
@@ -1421,12 +1451,51 @@ export default function ChatWindow() {
     )
   }
 
+  const renderConversationPinnedPanel = () => (
+    <div className="flex-1 overflow-y-auto p-4">
+      {pinnedMessages.length === 0 ? (
+        <div className="text-center text-sm text-gray-500 dark:text-gray-400 py-8">
+          No pinned messages yet
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {pinnedMessages.map((message) => (
+            <div
+              key={message.id}
+              className="rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/40 dark:bg-amber-900/10"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                  {message.senderName}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void togglePinMessage(message.id).then(() => {
+                    setPinnedMessages((current) => current.filter((m) => m.id !== message.id))
+                  })}
+                  className="text-xs text-gray-500 hover:text-red-500 dark:text-gray-400"
+                >
+                  Unpin
+                </button>
+              </div>
+              <p className="mt-1 break-words text-sm text-gray-700 dark:text-gray-200">
+                {message.content}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+
   const renderConversationBody = (layout: 'default' | 'sidebar' = 'default') =>
     activeTab === 'messages'
       ? renderConversationMessagesPanel(layout)
       : activeTab === 'files'
         ? renderConversationFilesPanel(layout)
-        : renderConversationMembersPanel(layout)
+        : activeTab === 'pinned'
+          ? renderConversationPinnedPanel()
+          : renderConversationMembersPanel(layout)
 
   if (!currentChatId) {
     return (
@@ -1564,6 +1633,31 @@ export default function ChatWindow() {
               </button>
             )}
           </div>
+
+          {!activeCallId && currentChatType && currentChatId && (
+            <div className="flex flex-shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void startCall(currentChatType, currentChatId, false)}
+                disabled={isConnecting}
+                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700"
+                title={activeChannel ? 'Start voice call' : 'Call'}
+              >
+                <PhoneIcon className="w-4 h-4" />
+                <span className="hidden sm:inline">Voice</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void startCall(currentChatType, currentChatId, true)}
+                disabled={isConnecting}
+                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700"
+                title={activeChannel ? 'Start video call' : 'Video call'}
+              >
+                <VideoCameraIcon className="w-4 h-4" />
+                <span className="hidden sm:inline">Video</span>
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="mt-3 flex items-center gap-2">
@@ -1586,6 +1680,16 @@ export default function ChatWindow() {
             }`}
           >
             Files
+          </button>
+          <button
+            onClick={() => setActiveTab('pinned')}
+            className={`px-3 py-1.5 rounded-full text-sm ${
+              activeTab === 'pinned'
+                ? 'bg-primary-600 text-white'
+                : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200'
+            }`}
+          >
+            Pinned
           </button>
           {activeChannel && (
             <button

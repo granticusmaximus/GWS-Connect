@@ -4,6 +4,7 @@ import { useAuthStore } from './store/authStore'
 import { useChatStore } from './store/chatStore'
 import { useNotificationStore } from './store/notificationStore'
 import { useThemeStore } from './store/themeStore'
+import { useCallStore } from './store/callStore'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import Dashboard from './pages/Dashboard'
@@ -11,6 +12,8 @@ import Profile from './pages/Profile'
 import Friends from './pages/Friends'
 import AdminPanel from './pages/AdminPanel'
 import ToastContainer from './components/ToastContainer'
+import IncomingCallModal from './components/IncomingCallModal'
+import CallBar from './components/CallBar'
 import './App.css'
 
 function App() {
@@ -18,6 +21,7 @@ function App() {
   const { initSocket, disconnectSocket, loadDirectConversations } = useChatStore()
   const { loadNotifications, resetNotifications } = useNotificationStore()
   const { setTheme } = useThemeStore()
+  const { registerSocketListeners } = useCallStore()
 
   useEffect(() => {
     initializeAuth()
@@ -41,13 +45,14 @@ function App() {
     }
 
     initSocket(activeToken)
+    registerSocketListeners()
     void loadNotifications()
     void loadDirectConversations()
 
     return () => {
       disconnectSocket()
     }
-  }, [disconnectSocket, initSocket, loadDirectConversations, loadNotifications, resetNotifications, token, user?.id])
+  }, [disconnectSocket, initSocket, loadDirectConversations, loadNotifications, registerSocketListeners, resetNotifications, token, user?.id])
 
   if (!initialized) {
     return (
@@ -60,6 +65,8 @@ function App() {
   return (
     <Router>
       <ToastContainer />
+      <CallBar />
+      <IncomingCallModal />
       <Routes>
         <Route path="/login" element={!user ? <Login /> : <Navigate to="/dashboard" />} />
         <Route path="/register" element={!user ? <Register /> : <Navigate to="/dashboard" />} />

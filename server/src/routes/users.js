@@ -86,7 +86,7 @@ router.get('/public-key/:userId', authenticateToken, async (req, res) => {
 		if (!record || !record.e2eePublicKey) {
 			return res.status(404).json({ message: 'Public key not found' });
 		}
-		res.json({ e2eePublicKey: record.e2eePublicKey });
+		res.json({ e2eePublicKey: JSON.parse(record.e2eePublicKey) });
 	} catch (error) {
 		res.status(500).json({ message: 'Server error' });
 	}

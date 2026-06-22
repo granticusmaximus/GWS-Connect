@@ -52,3 +52,26 @@ const resolveConfiguredSocketUrl = () => {
 
 export const API_URL = resolveConfiguredApiUrl()
 export const SOCKET_URL = resolveConfiguredSocketUrl()
+
+const resolveIceServers = (): RTCIceServer[] => {
+  const stunUrls = (import.meta.env.VITE_WEBRTC_STUN_URLS || 'stun:stun.l.google.com:19302')
+    .split(',')
+    .map((url: string) => url.trim())
+    .filter(Boolean)
+  const turnUrls = (import.meta.env.VITE_WEBRTC_TURN_URLS || '')
+    .split(',')
+    .map((url: string) => url.trim())
+    .filter(Boolean)
+  const turnUsername = import.meta.env.VITE_WEBRTC_TURN_USERNAME || undefined
+  const turnCredential = import.meta.env.VITE_WEBRTC_TURN_CREDENTIAL || undefined
+
+  const servers: RTCIceServer[] = stunUrls.map((urls: string) => ({ urls }))
+
+  if (turnUrls.length > 0) {
+    servers.push({ urls: turnUrls, username: turnUsername, credential: turnCredential })
+  }
+
+  return servers
+}
+
+export const WEBRTC_ICE_SERVERS = resolveIceServers()

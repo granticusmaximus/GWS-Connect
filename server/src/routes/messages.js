@@ -14,8 +14,10 @@ import {
 	getDirectFiles,
 	getMessageThreadRecordById,
 	getMessageMentions,
+	getPinnedMessages,
 	getReplyContextsByMessageIds,
 	markDirectConversationVisited,
+	searchMessages,
 	syncMessageMentions,
 	updateMessageFileInfo,
 } from '../models/Message.js';
@@ -182,6 +184,8 @@ const formatMessages = (messages, viewerId) => {
 			fileType: msg.fileType,
 			poll: pollSummary,
 			reactions,
+			isPinned: Boolean(msg.isPinned),
+			pinnedAt: msg.pinnedAt,
 			mentions: mentionsByMessageId.get(msg.id.toString()) || [],
 			replyToMessageId: normalizeId(msg.replyToMessageId),
 			threadRootMessageId: normalizeId(msg.threadRootMessageId),
@@ -250,6 +254,68 @@ router.post(
 		}
 	},
 );
+
+router.get('/search', authenticateToken, async (req, res) => {
+	try {
+		const query = String(req.query.q || '').trim();
+		const { channelId, recipientId } = req.query;
+
+		if (query.length < 2) {
+			return res.status(400).json({ message: 'Search query must be at least 2 characters' });
+		}
+
+		if (channelId) {
+			const access = canAccessChannel(channelId, req.user.id, getUserRole(req.user.id));
+			if (!access.channel) {
+				return res.status(404).json({ message: 'Channel not found' });
+			}
+			if (!access.allowed) {
+				return res.status(403).json({ message: access.reason });
+			}
+		} else if (!recipientId) {
+			return res.status(400).json({ message: 'channelId or recipientId is required' });
+		}
+
+		const messages = searchMessages(query, {
+			channelId: channelId || null,
+			recipientId: recipientId || null,
+			currentUserId: req.user.id,
+		});
+		res.json(formatMessages(messages, req.user.id));
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.get('/channel/:channelId/pinned', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessChannel(
+			req.params.channelId,
+			req.user.id,
+			getUserRole(req.user.id),
+		);
+		if (!access.channel) {
+			return res.status(404).json({ message: 'Channel not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const messages = getPinnedMessages(req.params.channelId, null, req.user.id);
+		res.json(formatMessages(messages, req.user.id));
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.get('/direct/:userId/pinned', authenticateToken, async (req, res) => {
+	try {
+		const messages = getPinnedMessages(null, req.params.userId, req.user.id);
+		res.json(formatMessages(messages, req.user.id));
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
 
 router.get('/direct-conversations', authenticateToken, async (req, res) => {
 	try {

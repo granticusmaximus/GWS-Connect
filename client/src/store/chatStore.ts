@@ -10,6 +10,10 @@ const ACTIVE_CHAT_STORAGE_KEY = 'gws-connect.active-chat'
 const TYPING_INDICATOR_TIMEOUT_MS = 3200
 
 const typingIndicatorTimeouts = new Map<string, number>()
+const IDLE_THRESHOLD_MS = 5 * 60 * 1000
+
+let idleTimer: number | null = null
+let idleActivityCleanup: (() => void) | null = null
 
 interface PersistedActiveChat {
     type: 'channel' | 'dm'
@@ -68,6 +72,8 @@ export interface Message {
     replyContext?: ReplyContext | null
     poll?: Poll
     reactions?: ReactionSummary[]
+    isPinned?: boolean
+    pinnedAt?: string | null
 }
 
 interface ReactionSummary {
@@ -141,6 +147,7 @@ interface ChatState {
     messageFocusTarget: MessageFocusTarget | null
     latestMessageRequest: LatestMessageRequest | null
     onlineUsers: string[]
+    presenceByUserId: { [userId: string]: 'online' | 'idle' }
     typingUsersByChatId: { [key: string]: TypingUser[] }
     initSocket: (token: string) => void
     disconnectSocket: () => void
@@ -156,6 +163,9 @@ interface ChatState {
     editMessage: (messageId: string, content: string) => Promise<boolean>
     deleteMessage: (messageId: string) => Promise<boolean>
     archiveMessage: (messageId: string) => Promise<boolean>
+    togglePinMessage: (messageId: string) => Promise<boolean>
+    loadPinnedMessages: (chatType: 'channel' | 'dm', chatId: string) => Promise<Message[]>
+    searchMessages: (chatType: 'channel' | 'dm', chatId: string, query: string) => Promise<Message[]>
     setActiveChannel: (channelId: string | null) => void
     setActiveDM: (dmId: string | null) => void
     setMessageFocusTarget: (target: MessageFocusTarget | null) => void
@@ -185,6 +195,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     messageFocusTarget: null,
     latestMessageRequest: null,
     onlineUsers: [],
+    presenceByUserId: {},
     typingUsersByChatId: {},
 
     initSocket: (token: string) => {
@@ -196,6 +207,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         socket.on('connect', () => {
             console.log('Socket connected')
+
+            const resetIdleTimer = () => {
+                socket.emit('presence-set', 'online')
+                if (idleTimer !== null) {
+                    window.clearTimeout(idleTimer)
+                }
+                idleTimer = window.setTimeout(() => {
+                    socket.emit('presence-set', 'idle')
+                }, IDLE_THRESHOLD_MS)
+            }
+
+            idleActivityCleanup?.()
+            const activityEvents = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'visibilitychange']
+            activityEvents.forEach((eventName) => window.addEventListener(eventName, resetIdleTimer))
+            idleActivityCleanup = () => {
+                activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetIdleTimer))
+            }
+            resetIdleTimer()
+
             const { activeChannel, activeDM } = get()
             if (activeChannel) {
                 socket.emit('join-channel', activeChannel)
@@ -418,8 +448,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }))
         })
 
+        socket.on('message-pin-update', (payload: { messageId: string; isPinned: boolean; pinnedAt: string | null }) => {
+            set((state) => {
+                const nextMessages = { ...state.messages }
+                for (const chatId of Object.keys(nextMessages)) {
+                    nextMessages[chatId] = nextMessages[chatId].map((message) =>
+                        message.id === payload.messageId
+                            ? { ...message, isPinned: payload.isPinned, pinnedAt: payload.pinnedAt }
+                            : message
+                    )
+                }
+                return { messages: nextMessages }
+            })
+        })
+
         socket.on('online-users', (users: string[]) => {
             set({ onlineUsers: users })
+        })
+
+        socket.on('presence-update', (presence: { [userId: string]: 'online' | 'idle' }) => {
+            set({ presenceByUserId: presence })
         })
 
         socket.on('typing-start', (payload: { chatId?: string; userId: string; username: string; avatar?: string | null }) => {
@@ -498,7 +546,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         typingIndicatorTimeouts.forEach((timeoutId) => window.clearTimeout(timeoutId))
         typingIndicatorTimeouts.clear()
-        set({ socket: null, typingUsersByChatId: {} })
+        if (idleTimer !== null) {
+            window.clearTimeout(idleTimer)
+            idleTimer = null
+        }
+        idleActivityCleanup?.()
+        idleActivityCleanup = null
+        set({ socket: null, typingUsersByChatId: {}, presenceByUserId: {} })
     },
 
     joinChannel: (channelId: string) => {
@@ -826,6 +880,64 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 },
             )
         })
+    },
+
+    togglePinMessage: async (messageId) => {
+        const { socket } = get()
+
+        if (!socket || !socket.connected) {
+            console.error('Socket not connected')
+            return false
+        }
+
+        return new Promise((resolve) => {
+            socket.emit(
+                'message-pin-toggle',
+                { messageId },
+                (response: { ok: boolean; message?: string }) => {
+                    if (!response?.ok) {
+                        console.error('Pin toggle failed:', response?.message)
+                        resolve(false)
+                        return
+                    }
+                    resolve(true)
+                },
+            )
+        })
+    },
+
+    loadPinnedMessages: async (chatType, chatId) => {
+        try {
+            const token = localStorage.getItem('token')
+            const path = chatType === 'channel'
+                ? `${API_URL}/messages/channel/${chatId}/pinned`
+                : `${API_URL}/messages/direct/${chatId}/pinned`
+            const response = await axios.get(path, {
+                headers: { Authorization: `Bearer ${token}` }
+            })
+            return await Promise.all(
+                response.data.map((message: Message) => processIncomingMessage(message))
+            )
+        } catch (error) {
+            console.error('Error loading pinned messages:', error)
+            return []
+        }
+    },
+
+    searchMessages: async (chatType, chatId, query) => {
+        try {
+            const token = localStorage.getItem('token')
+            const param = chatType === 'channel' ? `channelId=${chatId}` : `recipientId=${chatId}`
+            const response = await axios.get(`${API_URL}/messages/search?q=${encodeURIComponent(query)}&${param}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            })
+            return await Promise.all(
+                response.data.map((message: Message) => processIncomingMessage(message))
+            )
+        } catch (error) {
+            console.error('Error searching messages:', error)
+            return []
+        }
     },
 
     setActiveChannel: (channelId: string | null) => {

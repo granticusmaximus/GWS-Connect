@@ -72,7 +72,7 @@ router.post(
 				username,
 				email,
 				hashedPassword,
-				e2eePublicKey,
+				JSON.stringify(e2eePublicKey),
 				e2eeEncryptedPrivateKey,
 				e2eeSalt,
 				e2eeIv,
@@ -81,6 +81,7 @@ router.post(
 			// Retrieve full user object
 			const { findUserById } = await import('../models/User.js');
 			const newUser = findUserById(userId);
+			newUser.e2eePublicKey = JSON.parse(newUser.e2eePublicKey);
 
 			// Create token
 			const token = jwt.sign(
@@ -141,16 +142,42 @@ router.post(
 				return res.status(400).json({ message: 'Invalid credentials' });
 			}
 
+			if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
+				return res.status(429).json({
+					message:
+						'Account temporarily locked due to repeated failed login attempts. Please try again later.',
+				});
+			}
+
 			// Check password
 			const isMatch = await bcrypt.compare(password, user.password);
 			if (!isMatch) {
+				const attempts = (user.failedLoginAttempts || 0) + 1;
+				const lockedUntil =
+					attempts >= MAX_FAILED_LOGIN_ATTEMPTS
+						? new Date(Date.now() + LOCKOUT_DURATION_MS).toISOString()
+						: null;
+
+				db.prepare(
+					'UPDATE users SET failedLoginAttempts = ?, lockedUntil = ? WHERE id = ?',
+				).run(attempts, lockedUntil, user.id);
+
 				return res.status(400).json({ message: 'Invalid credentials' });
+			}
+
+			if (user.failedLoginAttempts || user.lockedUntil) {
+				db.prepare(
+					'UPDATE users SET failedLoginAttempts = 0, lockedUntil = NULL WHERE id = ?',
+				).run(user.id);
 			}
 
 			// Parse JSON fields
 			user.interests = JSON.parse(user.interests || '[]');
 			user.socialLinks = JSON.parse(user.socialLinks || '{}');
 			user.contactInfo = JSON.parse(user.contactInfo || '{}');
+			if (user.e2eePublicKey) {
+				user.e2eePublicKey = JSON.parse(user.e2eePublicKey);
+			}
 
 			// Create token
 			const token = jwt.sign(
@@ -242,6 +269,9 @@ router.post(
 		}
 	},
 );
+
+const MAX_FAILED_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
 
 const isStrongPassword = (password) =>
 	/^(?=.*[A-Za-z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/.test(password);

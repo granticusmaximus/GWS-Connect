@@ -20,6 +20,8 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
     setActiveDM,
     loadChannels,
     requestLatestMessageView,
+    onlineUsers,
+    presenceByUserId,
   } = useChatStore()
   const [showUserSearch, setShowUserSearch] = useState(false)
   const [showChannelModal, setShowChannelModal] = useState(false)
@@ -150,15 +152,27 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
                     : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
                 }`}
               >
-                <div className="h-9 w-9 flex-shrink-0 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
-                  {conversation.avatar ? (
-                    <img
-                      src={conversation.avatar}
-                      alt={conversation.username}
-                      className="h-full w-full object-cover"
+                <div className="relative h-9 w-9 flex-shrink-0">
+                  <div className="h-9 w-9 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
+                    {conversation.avatar ? (
+                      <img
+                        src={conversation.avatar}
+                        alt={conversation.username}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <UserCircleIcon className="h-7 w-7 text-gray-500 dark:text-gray-400" />
+                    )}
+                  </div>
+                  {onlineUsers.includes(conversation.userId) && (
+                    <span
+                      className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full ring-2 ring-white dark:ring-gray-800 ${
+                        presenceByUserId[conversation.userId] === 'idle'
+                          ? 'bg-yellow-400'
+                          : 'bg-green-500'
+                      }`}
+                      aria-label={presenceByUserId[conversation.userId] === 'idle' ? 'Idle' : 'Online'}
                     />
-                  ) : (
-                    <UserCircleIcon className="h-7 w-7 text-gray-500 dark:text-gray-400" />
                   )}
                 </div>
                 <span className="flex-1 truncate text-left text-sm font-medium">

@@ -387,6 +387,88 @@ export const markMessageArchived = (messageId) => {
 	stmt.run(messageId);
 };
 
+export const togglePinMessage = (messageId, userId) => {
+	const message = db.prepare('SELECT isPinned FROM messages WHERE id = ?').get(messageId);
+	if (!message) {
+		return null;
+	}
+
+	const nextPinned = message.isPinned ? 0 : 1;
+	db.prepare(
+		`UPDATE messages
+	 SET isPinned = ?,
+		 pinnedAt = ?,
+		 pinnedBy = ?
+	 WHERE id = ?`,
+	).run(
+		nextPinned,
+		nextPinned ? new Date().toISOString() : null,
+		nextPinned ? userId : null,
+		messageId,
+	);
+
+	return { isPinned: nextPinned, pinnedAt: nextPinned ? new Date().toISOString() : null };
+};
+
+export const searchMessages = (query, { channelId = null, recipientId = null, currentUserId }) => {
+	const likeTerm = `%${query.replace(/[%_]/g, '\\$&')}%`;
+
+	if (channelId) {
+		return db
+			.prepare(
+				`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+		 FROM messages m
+		 JOIN users u ON m.senderId = u.id
+		 WHERE m.channelId = ?
+		   AND m.isDeleted = 0 AND m.isEncrypted = 0
+		   AND m.content LIKE ? ESCAPE '\\'
+		 ORDER BY datetime(m.createdAt) DESC
+		 LIMIT 50`,
+			)
+			.all(channelId, likeTerm);
+	}
+
+	return db
+		.prepare(
+			`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+	 FROM messages m
+	 JOIN users u ON m.senderId = u.id
+	 WHERE m.recipientId IS NOT NULL
+	   AND m.isDeleted = 0 AND m.isEncrypted = 0
+	   AND ((m.senderId = ? AND m.recipientId = ?) OR (m.senderId = ? AND m.recipientId = ?))
+	   AND m.content LIKE ? ESCAPE '\\'
+	 ORDER BY datetime(m.createdAt) DESC
+	 LIMIT 50`,
+		)
+		.all(currentUserId, recipientId, recipientId, currentUserId, likeTerm);
+};
+
+export const getPinnedMessages = (channelId, recipientId, currentUserId) => {
+	if (channelId) {
+		return db
+			.prepare(
+				`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+		 FROM messages m
+		 JOIN users u ON m.senderId = u.id
+		 WHERE m.channelId = ? AND m.isPinned = 1 AND m.isDeleted = 0
+		 ORDER BY datetime(m.pinnedAt) DESC`,
+			)
+			.all(channelId);
+	}
+
+	return db
+		.prepare(
+			`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+	 FROM messages m
+	 JOIN users u ON m.senderId = u.id
+	 WHERE m.recipientId IS NOT NULL
+	   AND m.isPinned = 1 AND m.isDeleted = 0
+	   AND ((m.senderId = ? AND m.recipientId = ?) OR (m.senderId = ? AND m.recipientId = ?))
+	 ORDER BY datetime(m.pinnedAt) DESC`,
+		)
+		.all(currentUserId, recipientId, recipientId, currentUserId);
+};
+
 export const getChannelFiles = (channelId, limit = 200) => {
 	const stmt = db.prepare(
 		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.createdAt,

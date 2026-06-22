@@ -269,6 +269,37 @@ if (!messageColumns.includes('threadRootMessageId')) {
 	db.prepare('ALTER TABLE messages ADD COLUMN threadRootMessageId INTEGER').run();
 }
 
+const userColumns = db
+	.prepare("PRAGMA table_info('users')")
+	.all()
+	.map((column) => column.name);
+
+if (!userColumns.includes('failedLoginAttempts')) {
+	db.prepare(
+		'ALTER TABLE users ADD COLUMN failedLoginAttempts INTEGER DEFAULT 0',
+	).run();
+}
+
+if (!userColumns.includes('lockedUntil')) {
+	db.prepare('ALTER TABLE users ADD COLUMN lockedUntil DATETIME').run();
+}
+
+if (!messageColumns.includes('isPinned')) {
+	db.prepare('ALTER TABLE messages ADD COLUMN isPinned INTEGER DEFAULT 0').run();
+}
+
+if (!messageColumns.includes('pinnedAt')) {
+	db.prepare('ALTER TABLE messages ADD COLUMN pinnedAt DATETIME').run();
+}
+
+if (!messageColumns.includes('pinnedBy')) {
+	db.prepare('ALTER TABLE messages ADD COLUMN pinnedBy INTEGER').run();
+}
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_messages_pinned ON messages(channelId, recipientId, isPinned);
+`);
+
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(replyToMessageId);
   CREATE INDEX IF NOT EXISTS idx_messages_thread_root ON messages(threadRootMessageId);
