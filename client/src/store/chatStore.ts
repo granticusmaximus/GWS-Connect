@@ -624,26 +624,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (recipientId) {
                 const { e2eePrivateKey, user } = useAuthStore.getState()
 
-                if (e2eePrivateKey && user) {
-                    try {
-                        const peerId = String(recipientId)
-                        const sharedKey = await getSharedKey(e2eePrivateKey, peerId)
-                        const encrypted = await encryptMessage(content, sharedKey)
+                if (!e2eePrivateKey || !user) {
+                    useNotificationStore.getState().addToast({
+                        id: `e2ee-error-${Date.now()}`,
+                        title: 'Message not sent',
+                        body: 'End-to-end encryption is not ready yet. Please try again in a moment.',
+                    })
+                    return false
+                }
 
-                        payload = {
-                            content: '',
-                            channelId,
-                            recipientId,
-                            replyToMessageId,
-                            cipherText: encrypted.cipherText,
-                            cipherIv: encrypted.iv,
-                            isEncrypted: true,
-                        }
-                    } catch (error) {
-                        console.warn('DM encryption unavailable, falling back to plaintext delivery:', error)
+                try {
+                    const peerId = String(recipientId)
+                    const sharedKey = await getSharedKey(e2eePrivateKey, peerId)
+                    const encrypted = await encryptMessage(content, sharedKey)
+
+                    payload = {
+                        content: '',
+                        channelId,
+                        recipientId,
+                        replyToMessageId,
+                        cipherText: encrypted.cipherText,
+                        cipherIv: encrypted.iv,
+                        isEncrypted: true,
                     }
-                } else {
-                    console.warn('E2EE not ready for DM, falling back to plaintext delivery')
+                } catch (error) {
+                    console.error('DM encryption failed:', error)
+                    useNotificationStore.getState().addToast({
+                        id: `e2ee-error-${Date.now()}`,
+                        title: 'Message not sent',
+                        body: 'Failed to encrypt this message. Please try again.',
+                    })
+                    return false
                 }
             }
 

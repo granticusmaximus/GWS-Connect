@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
-    "migrate": "node migrations/001_add_admin_role_to_galacticus.js"
+    "migrate": "node migrations/001_add_admin_role_to_galacticus.js",
+    "test": "node --test src/**/*.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

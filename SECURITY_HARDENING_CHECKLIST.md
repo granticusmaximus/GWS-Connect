@@ -9,9 +9,10 @@ This checklist tracks practical hardening tasks for auth, logging, and admin pas
 - [x] Stop accepting bearer tokens from query parameters.
 - [ ] Add token revocation strategy (logout all sessions / compromised account).
 - [ ] Add refresh token rotation with reuse detection.
-- [ ] Add login and password-reset request rate limiting per IP and per account.
-- [ ] Add account lockout/backoff after repeated failed login attempts.
-- [ ] Add security response headers (`helmet`) with explicit CSP policy.
+- [x] Add login and password-reset request rate limiting per IP and per account.
+- [x] Add account lockout/backoff after repeated failed login attempts.
+- [x] Add security response headers (`helmet`).
+- [ ] Tune `helmet`'s default CSP policy explicitly (currently using helmet defaults).
 
 ## Input And Content Safety
 
