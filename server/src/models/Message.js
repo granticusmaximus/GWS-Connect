@@ -59,16 +59,18 @@ export const createMessage = (
 	isEncrypted = 0,
 	replyToMessageId = null,
 	threadRootMessageId = null,
+	groupChatId = null,
 ) => {
 	const stmt = db.prepare(`
-    INSERT INTO messages (content, senderId, channelId, recipientId, replyToMessageId, threadRootMessageId, fileUrl, fileName, fileType, filePath, cipherText, cipherIv, isEncrypted)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (content, senderId, channelId, recipientId, groupChatId, replyToMessageId, threadRootMessageId, fileUrl, fileName, fileType, filePath, cipherText, cipherIv, isEncrypted)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 	const result = stmt.run(
 		content,
 		senderId,
 		channelId,
 		recipientId,
+		groupChatId,
 		replyToMessageId,
 		threadRootMessageId,
 		fileUrl,
@@ -80,6 +82,22 @@ export const createMessage = (
 		isEncrypted,
 	);
 	return result.lastInsertRowid;
+};
+
+export const getGroupChatMessages = (groupChatId, limit = 100) => {
+	const stmt = db.prepare(`
+    SELECT *
+    FROM (
+      SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+      FROM messages m
+      JOIN users u ON m.senderId = u.id
+      WHERE m.groupChatId = ? AND m.isArchived = 0
+      ORDER BY datetime(m.createdAt) DESC, m.id DESC
+      LIMIT ?
+    ) recent_messages
+    ORDER BY datetime(createdAt) ASC, id ASC
+  `);
+	return stmt.all(groupChatId, limit);
 };
 
 export const getChannelMessages = (channelId, limit = 100) => {
@@ -410,7 +428,10 @@ export const togglePinMessage = (messageId, userId) => {
 	return { isPinned: nextPinned, pinnedAt: nextPinned ? new Date().toISOString() : null };
 };
 
-export const searchMessages = (query, { channelId = null, recipientId = null, currentUserId }) => {
+export const searchMessages = (
+	query,
+	{ channelId = null, recipientId = null, groupChatId = null, currentUserId },
+) => {
 	const likeTerm = `%${query.replace(/[%_]/g, '\\$&')}%`;
 
 	if (channelId) {
@@ -428,6 +449,21 @@ export const searchMessages = (query, { channelId = null, recipientId = null, cu
 			.all(channelId, likeTerm);
 	}
 
+	if (groupChatId) {
+		return db
+			.prepare(
+				`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+		 FROM messages m
+		 JOIN users u ON m.senderId = u.id
+		 WHERE m.groupChatId = ?
+		   AND m.isDeleted = 0 AND m.isEncrypted = 0
+		   AND m.content LIKE ? ESCAPE '\\'
+		 ORDER BY datetime(m.createdAt) DESC
+		 LIMIT 50`,
+			)
+			.all(groupChatId, likeTerm);
+	}
+
 	return db
 		.prepare(
 			`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
@@ -443,7 +479,7 @@ export const searchMessages = (query, { channelId = null, recipientId = null, cu
 		.all(currentUserId, recipientId, recipientId, currentUserId, likeTerm);
 };
 
-export const getPinnedMessages = (channelId, recipientId, currentUserId) => {
+export const getPinnedMessages = (channelId, recipientId, currentUserId, groupChatId = null) => {
 	if (channelId) {
 		return db
 			.prepare(
@@ -454,6 +490,18 @@ export const getPinnedMessages = (channelId, recipientId, currentUserId) => {
 		 ORDER BY datetime(m.pinnedAt) DESC`,
 			)
 			.all(channelId);
+	}
+
+	if (groupChatId) {
+		return db
+			.prepare(
+				`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+		 FROM messages m
+		 JOIN users u ON m.senderId = u.id
+		 WHERE m.groupChatId = ? AND m.isPinned = 1 AND m.isDeleted = 0
+		 ORDER BY datetime(m.pinnedAt) DESC`,
+			)
+			.all(groupChatId);
 	}
 
 	return db

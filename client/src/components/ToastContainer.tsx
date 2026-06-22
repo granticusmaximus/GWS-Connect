@@ -5,7 +5,7 @@ import { useChatStore } from '../store/chatStore'
 
 export default function ToastContainer() {
   const navigate = useNavigate()
-  const { setActiveChannel, setActiveDM, setMessageFocusTarget, loadMessageById } = useChatStore()
+  const { setActiveChannel, setActiveDM, setActiveGroupChat, setMessageFocusTarget, loadMessageById } = useChatStore()
   const { toasts, removeToast } = useNotificationStore()
 
   useEffect(() => {
@@ -30,6 +30,8 @@ export default function ToastContainer() {
             if (toast.target) {
               if (toast.target.type === 'channel') {
                 setActiveChannel(toast.target.id)
+              } else if (toast.target.type === 'group') {
+                setActiveGroupChat(toast.target.id)
               } else {
                 setActiveDM(toast.target.id)
               }

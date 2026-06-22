@@ -3,7 +3,7 @@ import { create } from 'zustand'
 import { API_URL } from '../config/runtime'
 
 export interface NotificationTarget {
-  type: 'channel' | 'dm'
+  type: 'channel' | 'dm' | 'group'
   id: string
   label?: string
 }

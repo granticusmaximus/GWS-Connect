@@ -19,6 +19,7 @@ const TYPING_KEEPALIVE_INTERVAL_MS = 1500
 interface MessageInputProps {
   channelId?: string
   recipientId?: string
+  groupChatId?: string
   onSelectFile?: (file: File) => void
   replyTarget?: ChatMessage | null
   onCancelReply?: () => void
@@ -105,6 +106,7 @@ function TypingIndicator({ users }: TypingIndicatorProps) {
 export default function MessageInput({
   channelId,
   recipientId,
+  groupChatId,
   onSelectFile,
   replyTarget = null,
   onCancelReply,
@@ -135,7 +137,13 @@ export default function MessageInput({
     typingUsersByChatId,
   } = useChatStore()
 
-  const typingConversationKey = channelId ? String(channelId) : recipientId ? String(recipientId) : null
+  const typingConversationKey = channelId
+    ? String(channelId)
+    : groupChatId
+      ? String(groupChatId)
+      : recipientId
+        ? String(recipientId)
+        : null
   const typingUsers = useMemo(
     () => (typingConversationKey ? typingUsersByChatId[typingConversationKey] || [] : []),
     [typingConversationKey, typingUsersByChatId],
@@ -145,15 +153,19 @@ export default function MessageInput({
 
   const commandItems = useMemo(
     () => [
-      {
-        id: 'attach',
-        label: 'Attach File',
-        description: 'Upload a file',
-        icon: PaperClipIcon,
-        action: () => {
-          fileInputRef.current?.click()
-        },
-      },
+      ...(groupChatId
+        ? []
+        : [
+          {
+            id: 'attach',
+            label: 'Attach File',
+            description: 'Upload a file',
+            icon: PaperClipIcon,
+            action: () => {
+              fileInputRef.current?.click()
+            },
+          },
+        ]),
       {
         id: 'gif',
         label: 'GIF',
@@ -164,18 +176,22 @@ export default function MessageInput({
           setShowGifModal(true)
         },
       },
-      {
-        id: 'poll',
-        label: 'Create Poll',
-        description: 'Start a new poll',
-        icon: ChartBarIcon,
-        action: () => {
-          setPollInitialQuestion('')
-          setShowPollModal(true)
-        },
-      },
+      ...(groupChatId
+        ? []
+        : [
+          {
+            id: 'poll',
+            label: 'Create Poll',
+            description: 'Start a new poll',
+            icon: ChartBarIcon,
+            action: () => {
+              setPollInitialQuestion('')
+              setShowPollModal(true)
+            },
+          },
+        ]),
     ],
-    []
+    [groupChatId]
   )
 
   useEffect(() => {
@@ -204,13 +220,13 @@ export default function MessageInput({
       return
     }
 
-    emitTypingStop(channelId, recipientId)
+    emitTypingStop(channelId, recipientId, groupChatId)
     typingStateRef.current.active = false
     typingStateRef.current.lastEmittedAt = 0
-  }, [channelId, clearTypingStopTimeout, emitTypingStop, recipientId])
+  }, [channelId, clearTypingStopTimeout, emitTypingStop, groupChatId, recipientId])
 
   const syncTypingState = useCallback((nextMessage: string) => {
-    if (!channelId && !recipientId) return
+    if (!channelId && !recipientId && !groupChatId) return
 
     const hasContent = nextMessage.trim().length > 0
     if (!hasContent) {
@@ -223,14 +239,14 @@ export default function MessageInput({
       !typingStateRef.current.active ||
       now - typingStateRef.current.lastEmittedAt >= TYPING_KEEPALIVE_INTERVAL_MS
     ) {
-      emitTypingStart(channelId, recipientId)
+      emitTypingStart(channelId, recipientId, groupChatId)
       typingStateRef.current.active = true
       typingStateRef.current.lastEmittedAt = now
     }
 
     clearTypingStopTimeout()
     typingStopTimeoutRef.current = window.setTimeout(() => {
-      emitTypingStop(channelId, recipientId)
+      emitTypingStop(channelId, recipientId, groupChatId)
       typingStateRef.current.active = false
       typingStateRef.current.lastEmittedAt = 0
       typingStopTimeoutRef.current = null
@@ -240,6 +256,7 @@ export default function MessageInput({
     clearTypingStopTimeout,
     emitTypingStart,
     emitTypingStop,
+    groupChatId,
     recipientId,
     stopTyping,
   ])
@@ -340,7 +357,7 @@ export default function MessageInput({
       return
     }
 
-    const sent = await sendMessage(message, channelId, recipientId, undefined, replyTarget?.id)
+    const sent = await sendMessage(message, channelId, recipientId, undefined, replyTarget?.id, groupChatId)
     if (sent) {
       setMessage('')
       setMentionContext(null)
@@ -463,20 +480,22 @@ export default function MessageInput({
 
           {showActions && (
             <div className="absolute bottom-12 left-0 w-48 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg py-2">
-              <label className="w-full px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center gap-2 cursor-pointer">
-                <input
-                  type="file"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (file && onSelectFile) onSelectFile(file)
-                    setShowActions(false)
-                  }}
-                  aria-label="File upload"
-                />
-                <PaperClipIcon className="w-4 h-4" />
-                Attach File
-              </label>
+              {!groupChatId && (
+                <label className="w-full px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="file"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file && onSelectFile) onSelectFile(file)
+                      setShowActions(false)
+                    }}
+                    aria-label="File upload"
+                  />
+                  <PaperClipIcon className="w-4 h-4" />
+                  Attach File
+                </label>
+              )}
               <button
                 type="button"
                 onClick={() => {
@@ -489,18 +508,20 @@ export default function MessageInput({
                 <PhotoIcon className="w-4 h-4" />
                 GIF
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPollInitialQuestion('')
-                  setShowPollModal(true)
-                  setShowActions(false)
-                }}
-                className="w-full px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center gap-2"
-              >
-                <ChartBarIcon className="w-4 h-4" />
-                Create Poll
-              </button>
+              {!groupChatId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPollInitialQuestion('')
+                    setShowPollModal(true)
+                    setShowActions(false)
+                  }}
+                  className="w-full px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center gap-2"
+                >
+                  <ChartBarIcon className="w-4 h-4" />
+                  Create Poll
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -615,7 +636,7 @@ export default function MessageInput({
         initialQuery={gifQuery}
         onClose={() => setShowGifModal(false)}
         onSelect={async (gif) => {
-          const ok = await sendGif(gif.url, gif.title, channelId, recipientId, replyTarget?.id)
+          const ok = await sendGif(gif.url, gif.title, channelId, recipientId, replyTarget?.id, groupChatId)
           if (ok) {
             setShowGifModal(false)
             setGifQuery('')

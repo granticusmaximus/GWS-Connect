@@ -327,6 +327,45 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_direct_message_visits_peer
     ON direct_message_visits(peerUserId, userId, lastVisitedAt);
+
+  CREATE TABLE IF NOT EXISTS group_chats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    createdBy INTEGER NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS group_chat_members (
+    groupChatId INTEGER NOT NULL,
+    userId INTEGER NOT NULL,
+    joinedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (groupChatId, userId),
+    FOREIGN KEY (groupChatId) REFERENCES group_chats(id) ON DELETE CASCADE,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_group_chat_members_user ON group_chat_members(userId);
+
+  CREATE TABLE IF NOT EXISTS group_chat_visits (
+    userId INTEGER NOT NULL,
+    groupChatId INTEGER NOT NULL,
+    lastVisitedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (userId, groupChatId),
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (groupChatId) REFERENCES group_chats(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_group_chat_visits_group
+    ON group_chat_visits(groupChatId, userId, lastVisitedAt);
+`);
+
+if (!messageColumns.includes('groupChatId')) {
+	db.prepare('ALTER TABLE messages ADD COLUMN groupChatId INTEGER').run();
+}
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_messages_group_chat ON messages(groupChatId);
 `);
 
 db.prepare(

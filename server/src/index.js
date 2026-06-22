@@ -11,6 +11,7 @@ import './database.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import channelRoutes from './routes/channels.js';
+import groupChatRoutes from './routes/groupChats.js';
 import messageRoutes from './routes/messages.js';
 import adminRoutes from './routes/admin.js';
 import managerRoutes from './routes/manager.js';
@@ -21,6 +22,7 @@ import gifRoutes from './routes/gifs.js';
 import { authenticateSocket } from './middleware/auth.js';
 import { canSendMessage, getUserRole } from './middleware/roles.js';
 import { canAccessChannel } from './models/Channel.js';
+import { canAccessGroupChat, findGroupChatsForUser } from './models/GroupChat.js';
 import {
 	getMessageThreadRecordById,
 	getReplyContextByMessageId,
@@ -136,6 +138,7 @@ app.use('/api/auth/forgot-password-request', authRateLimiter);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/channels', channelRoutes);
+app.use('/api/group-chats', groupChatRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/friends', friendRoutes);
@@ -168,15 +171,19 @@ const onlineSocketUsers = new Map();
 const userPresence = new Map(); // userId -> 'online' | 'idle'
 
 // WebRTC call sessions, keyed by callId.
-// callId is `channel:<channelId>` for channel calls or `dm:<sortedUserIdA>-<sortedUserIdB>` for DM calls.
+// callId is `channel:<channelId>` for channel calls, `group:<groupChatId>` for
+// group chat calls, or `dm:<sortedUserIdA>-<sortedUserIdB>` for DM calls.
 // participants: Map<userId, { username, withVideo }>
 const callSessions = new Map();
 
 const buildDmCallId = (userIdA, userIdB) =>
 	`dm:${[String(userIdA), String(userIdB)].sort().join('-')}`;
 
-const resolveCallId = ({ chatType, chatId, currentUserId }) =>
-	chatType === 'channel' ? `channel:${chatId}` : buildDmCallId(currentUserId, chatId);
+const resolveCallId = ({ chatType, chatId, currentUserId }) => {
+	if (chatType === 'channel') return `channel:${chatId}`;
+	if (chatType === 'group') return `group:${chatId}`;
+	return buildDmCallId(currentUserId, chatId);
+};
 
 const getOrCreateCallSession = (callId, chatType, chatId) => {
 	let session = callSessions.get(callId);
@@ -206,12 +213,13 @@ const broadcastPresence = () => {
 	);
 };
 
-const buildTypingPayload = ({ socket, channelId = null, chatId = null }) => {
+const buildTypingPayload = ({ socket, channelId = null, groupChatId = null, chatId = null }) => {
 	const user = findUserById(socket.user.id);
 
 	return {
 		chatId: chatId ? String(chatId) : null,
 		channelId: channelId ? String(channelId) : null,
+		groupChatId: groupChatId ? String(groupChatId) : null,
 		userId: String(socket.user.id),
 		username: socket.user.username,
 		avatar: user?.avatar || null,
@@ -223,6 +231,7 @@ const emitTypingIndicator = ({
 	eventName,
 	channelId = null,
 	recipientId = null,
+	groupChatId = null,
 }) => {
 	if (channelId) {
 		socket.to(`channel:${channelId}`).emit(
@@ -231,6 +240,18 @@ const emitTypingIndicator = ({
 				socket,
 				channelId,
 				chatId: channelId,
+			}),
+		);
+		return;
+	}
+
+	if (groupChatId) {
+		socket.to(`group:${groupChatId}`).emit(
+			eventName,
+			buildTypingPayload({
+				socket,
+				groupChatId,
+				chatId: groupChatId,
 			}),
 		);
 		return;
@@ -253,14 +274,22 @@ const normalizeId = (value) =>
 const resolveChannelAccess = (channelId, userId) =>
 	canAccessChannel(channelId, userId, getUserRole(userId));
 
+const resolveGroupChatAccess = (groupChatId, userId) =>
+	canAccessGroupChat(groupChatId, userId);
+
 const replyBelongsToConversation = ({
 	replyMessage,
 	channelId,
 	recipientId,
+	groupChatId,
 	currentUserId,
 }) => {
 	if (channelId) {
 		return normalizeId(replyMessage.channelId) === normalizeId(channelId);
+	}
+
+	if (groupChatId) {
+		return normalizeId(replyMessage.groupChatId) === normalizeId(groupChatId);
 	}
 
 	if (!recipientId) {
@@ -282,6 +311,7 @@ const resolveReplyState = ({
 	replyToMessageId,
 	channelId,
 	recipientId,
+	groupChatId,
 	currentUserId,
 }) => {
 	if (!replyToMessageId) {
@@ -303,6 +333,7 @@ const resolveReplyState = ({
 			replyMessage,
 			channelId,
 			recipientId,
+			groupChatId,
 			currentUserId,
 		})
 	) {
@@ -349,6 +380,12 @@ io.on('connection', async (socket) => {
 		if (generalChannel) {
 			socket.join(`channel:${generalChannel.id}`);
 		}
+
+		const groupChats = findGroupChatsForUser(socket.user.id);
+		groupChats.forEach((groupChat) => {
+			socket.join(`group:${groupChat.id}`);
+		});
+		socket.emit('group-chats', groupChats);
 	} catch (error) {
 		await logSocketError(error, {
 			file: 'index.js',
@@ -387,7 +424,7 @@ io.on('connection', async (socket) => {
 	});
 
 	socket.on('typing-start', async (data = {}) => {
-		const { channelId = null, recipientId = null } = data;
+		const { channelId = null, recipientId = null, groupChatId = null } = data;
 
 		try {
 			if (channelId) {
@@ -402,6 +439,13 @@ io.on('connection', async (socket) => {
 				}
 			}
 
+			if (groupChatId) {
+				const access = resolveGroupChatAccess(groupChatId, socket.user.id);
+				if (!access.allowed) {
+					return;
+				}
+			}
+
 			if (recipientId && String(recipientId) === String(socket.user.id)) {
 				return;
 			}
@@ -411,6 +455,7 @@ io.on('connection', async (socket) => {
 				eventName: 'typing-start',
 				channelId,
 				recipientId,
+				groupChatId,
 			});
 		} catch (error) {
 			await logSocketError(error, {
@@ -424,13 +469,14 @@ io.on('connection', async (socket) => {
 					username: socket.user.username,
 					channelId,
 					recipientId,
+					groupChatId,
 				},
 			});
 		}
 	});
 
 	socket.on('typing-stop', async (data = {}) => {
-		const { channelId = null, recipientId = null } = data;
+		const { channelId = null, recipientId = null, groupChatId = null } = data;
 
 		try {
 			if (channelId) {
@@ -445,6 +491,13 @@ io.on('connection', async (socket) => {
 				}
 			}
 
+			if (groupChatId) {
+				const access = resolveGroupChatAccess(groupChatId, socket.user.id);
+				if (!access.allowed) {
+					return;
+				}
+			}
+
 			if (recipientId && String(recipientId) === String(socket.user.id)) {
 				return;
 			}
@@ -454,6 +507,7 @@ io.on('connection', async (socket) => {
 				eventName: 'typing-stop',
 				channelId,
 				recipientId,
+				groupChatId,
 			});
 		} catch (error) {
 			await logSocketError(error, {
@@ -467,6 +521,7 @@ io.on('connection', async (socket) => {
 					username: socket.user.username,
 					channelId,
 					recipientId,
+					groupChatId,
 				},
 			});
 		}
@@ -478,6 +533,7 @@ io.on('connection', async (socket) => {
 			content,
 			channelId,
 			recipientId,
+			groupChatId,
 			replyToMessageId,
 			cipherText,
 			cipherIv,
@@ -506,10 +562,22 @@ io.on('connection', async (socket) => {
 				}
 			}
 
+			if (groupChatId) {
+				const access = resolveGroupChatAccess(groupChatId, socket.user.id);
+				if (!access.allowed) {
+					socket.emit('message-error', {
+						message: access.reason,
+					});
+					callback?.({ ok: false, message: access.reason });
+					return;
+				}
+			}
+
 			const replyState = resolveReplyState({
 				replyToMessageId,
 				channelId,
 				recipientId,
+				groupChatId,
 				currentUserId: socket.user.id,
 			});
 
@@ -539,6 +607,7 @@ io.on('connection', async (socket) => {
 				isEncrypted ? 1 : 0,
 				replyState.replyToMessageId,
 				replyState.threadRootMessageId,
+				groupChatId || null,
 			);
 			const mentions = syncMessageMentions(messageId, safeContent);
 
@@ -555,6 +624,7 @@ io.on('connection', async (socket) => {
 				timestamp: new Date(),
 				channelId,
 				recipientId,
+				groupChatId,
 				cipherText: cipherText || null,
 				cipherIv: cipherIv || null,
 				isEncrypted: isEncrypted ? 1 : 0,
@@ -568,7 +638,24 @@ io.on('connection', async (socket) => {
 			const { sendPushToUser } = await import('./services/push.js');
 			const replyRecipientUserId = replyState.replyContext?.senderId;
 
-			if (channelId) {
+			if (groupChatId) {
+				const { getGroupChatMembers } = await import('./models/GroupChat.js');
+				io.to(`group:${groupChatId}`).emit('message', message);
+
+				const members = getGroupChatMembers(groupChatId);
+				await Promise.all(
+					members
+						.filter((member) => String(member.id) !== String(socket.user.id))
+						.map((member) =>
+							sendPushToUser(member.id, {
+								title: 'GWS Connect',
+								body: `New message in group from ${socket.user.username}`,
+								icon: '/gws-connect-favicon.svg',
+								url: '/dashboard',
+							}),
+						),
+				);
+			} else if (channelId) {
 				// Send to channel
 				io.to(`channel:${channelId}`).emit('message', message);
 				console.log(`Message sent to channel ${channelId}:`, message);
@@ -659,7 +746,7 @@ io.on('connection', async (socket) => {
 					isEncrypted,
 					hasCipherText: Boolean(cipherText),
 					messagePreview: content ? content.substring(0, 100) : 'empty',
-					targetType: channelId ? 'channel' : 'direct-message',
+					targetType: channelId ? 'channel' : groupChatId ? 'group-chat' : 'direct-message',
 				},
 			});
 			socket.emit('error', { message: 'Failed to send message' });
@@ -669,7 +756,7 @@ io.on('connection', async (socket) => {
 
 	// Handle GIF messages
 	socket.on('gif-message', async (data, callback) => {
-		const { gifUrl, title, channelId, recipientId, replyToMessageId } =
+		const { gifUrl, title, channelId, recipientId, groupChatId, replyToMessageId } =
 			data || {};
 
 		try {
@@ -692,10 +779,19 @@ io.on('connection', async (socket) => {
 				}
 			}
 
+			if (groupChatId) {
+				const access = resolveGroupChatAccess(groupChatId, socket.user.id);
+				if (!access.allowed) {
+					callback?.({ ok: false, message: access.reason });
+					return;
+				}
+			}
+
 			const replyState = resolveReplyState({
 				replyToMessageId,
 				channelId,
 				recipientId,
+				groupChatId,
 				currentUserId: socket.user.id,
 			});
 
@@ -719,6 +815,7 @@ io.on('connection', async (socket) => {
 				0,
 				replyState.replyToMessageId,
 				replyState.threadRootMessageId,
+				groupChatId || null,
 			);
 
 			const { findUserById } = await import('./models/User.js');
@@ -734,6 +831,7 @@ io.on('connection', async (socket) => {
 				timestamp: new Date(),
 				channelId,
 				recipientId,
+				groupChatId,
 				fileUrl: gifUrl,
 				fileName: title || 'GIF',
 				fileType: 'image/gif',
@@ -743,7 +841,9 @@ io.on('connection', async (socket) => {
 				replyContext: replyState.replyContext,
 			};
 
-			if (channelId) {
+			if (groupChatId) {
+				io.to(`group:${groupChatId}`).emit('message', message);
+			} else if (channelId) {
 				io.to(`channel:${channelId}`).emit('message', message);
 			} else if (recipientId) {
 				io.to(recipientId).emit('message', message);
@@ -779,7 +879,7 @@ io.on('connection', async (socket) => {
 					username: socket.user.username,
 					gifUrl: gifUrl ? 'provided' : 'missing',
 					title: title || 'untitled',
-					targetType: channelId ? 'channel' : 'direct-message',
+					targetType: channelId ? 'channel' : groupChatId ? 'group-chat' : 'direct-message',
 				},
 			});
 			callback?.({ ok: false, message: 'Failed to send GIF' });
@@ -1067,7 +1167,9 @@ io.on('connection', async (socket) => {
 				mentions,
 			};
 
-			if (message.channelId) {
+			if (message.groupChatId) {
+				io.to(`group:${message.groupChatId}`).emit('message-updated', updated);
+			} else if (message.channelId) {
 				io.to(`channel:${message.channelId}`).emit('message-updated', updated);
 			} else if (message.recipientId) {
 				io.to(String(message.recipientId)).emit('message-updated', updated);
@@ -1134,7 +1236,9 @@ io.on('connection', async (socket) => {
 				fileType: null,
 			};
 
-			if (message.channelId) {
+			if (message.groupChatId) {
+				io.to(`group:${message.groupChatId}`).emit('message-updated', updated);
+			} else if (message.channelId) {
 				io.to(`channel:${message.channelId}`).emit('message-updated', updated);
 			} else if (message.recipientId) {
 				io.to(String(message.recipientId)).emit('message-updated', updated);
@@ -1192,7 +1296,11 @@ io.on('connection', async (socket) => {
 
 			markMessageArchived(messageId);
 
-			if (message.channelId) {
+			if (message.groupChatId) {
+				io.to(`group:${message.groupChatId}`).emit('message-archived', {
+					messageId: messageId.toString(),
+				});
+			} else if (message.channelId) {
 				io.to(`channel:${message.channelId}`).emit('message-archived', {
 					messageId: messageId.toString(),
 				});
@@ -1241,6 +1349,12 @@ io.on('connection', async (socket) => {
 					callback?.({ ok: false, message: access.reason });
 					return;
 				}
+			} else if (message.groupChatId) {
+				const access = resolveGroupChatAccess(message.groupChatId, socket.user.id);
+				if (!access.allowed) {
+					callback?.({ ok: false, message: access.reason });
+					return;
+				}
 			} else if (message.recipientId) {
 				if (
 					String(message.recipientId) !== String(socket.user.id) &&
@@ -1263,7 +1377,9 @@ io.on('connection', async (socket) => {
 				pinnedAt: result.pinnedAt,
 			};
 
-			if (message.channelId) {
+			if (message.groupChatId) {
+				io.to(`group:${message.groupChatId}`).emit('message-pin-update', update);
+			} else if (message.channelId) {
 				io.to(`channel:${message.channelId}`).emit('message-pin-update', update);
 			} else if (message.recipientId) {
 				io.to(String(message.recipientId)).emit('message-pin-update', update);
@@ -1319,6 +1435,12 @@ io.on('connection', async (socket) => {
 					callback?.({ ok: false, message: access.reason });
 					return;
 				}
+			} else if (message.groupChatId) {
+				const access = resolveGroupChatAccess(message.groupChatId, socket.user.id);
+				if (!access.allowed) {
+					callback?.({ ok: false, message: access.reason });
+					return;
+				}
 			} else if (message.recipientId) {
 				if (
 					String(message.recipientId) !== String(socket.user.id) &&
@@ -1357,6 +1479,11 @@ io.on('connection', async (socket) => {
 						reaction,
 					});
 				}
+			} else if (message.groupChatId) {
+				io.to(`group:${message.groupChatId}`).emit('reaction-update', {
+					messageId: messageId.toString(),
+					reactions: reactionsForBroadcast,
+				});
 			} else if (message.recipientId) {
 				io.to(String(message.recipientId)).emit('reaction-update', {
 					messageId: messageId.toString(),
@@ -1398,13 +1525,21 @@ io.on('connection', async (socket) => {
 		const { chatType, chatId, withVideo = false } = data || {};
 
 		try {
-			if (chatType !== 'channel' && chatType !== 'dm') {
+			if (chatType !== 'channel' && chatType !== 'dm' && chatType !== 'group') {
 				callback?.({ ok: false, message: 'Invalid chat type' });
 				return;
 			}
 
 			if (chatType === 'channel') {
 				const access = resolveChannelAccess(chatId, socket.user.id);
+				if (!access.allowed) {
+					callback?.({ ok: false, message: access.reason });
+					return;
+				}
+			}
+
+			if (chatType === 'group') {
+				const access = resolveGroupChatAccess(chatId, socket.user.id);
 				if (!access.allowed) {
 					callback?.({ ok: false, message: access.reason });
 					return;

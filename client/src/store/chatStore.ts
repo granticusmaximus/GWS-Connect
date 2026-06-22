@@ -16,7 +16,7 @@ let idleTimer: number | null = null
 let idleActivityCleanup: (() => void) | null = null
 
 interface PersistedActiveChat {
-    type: 'channel' | 'dm'
+    type: 'channel' | 'dm' | 'group'
     id: string
     userId: string
 }
@@ -37,13 +37,13 @@ export interface ReplyContext {
 }
 
 export interface MessageFocusTarget {
-    chatType: 'channel' | 'dm'
+    chatType: 'channel' | 'dm' | 'group'
     chatId: string
     messageId: string
 }
 
 export interface LatestMessageRequest {
-    chatType: 'channel' | 'dm'
+    chatType: 'channel' | 'dm' | 'group'
     chatId: string
     nonce: number
 }
@@ -56,6 +56,7 @@ export interface Message {
     senderAvatar?: string
     channelId?: string
     recipientId?: string
+    groupChatId?: string
     cipherText?: string | null
     cipherIv?: string | null
     isEncrypted?: number | boolean
@@ -120,6 +121,20 @@ export interface DirectMessage {
     unreadCount: number
 }
 
+export interface GroupChatMember {
+    id: string
+    username: string
+    avatar?: string | null
+}
+
+export interface GroupChat {
+    id: string
+    name: string
+    members: GroupChatMember[]
+    lastMessageAt: string | null
+    unreadCount: number
+}
+
 export interface TypingUser {
     userId: string
     username: string
@@ -140,10 +155,12 @@ interface ChatState {
     socket: Socket | null
     channels: Channel[]
     directMessages: DirectMessage[]
+    groupChats: GroupChat[]
     messages: { [key: string]: Message[] }
     filesByChatId: { [key: string]: SharedFileItem[] }
     activeChannel: string | null
     activeDM: string | null
+    activeGroupChat: string | null
     messageFocusTarget: MessageFocusTarget | null
     latestMessageRequest: LatestMessageRequest | null
     onlineUsers: string[]
@@ -153,10 +170,10 @@ interface ChatState {
     disconnectSocket: () => void
     joinChannel: (channelId: string) => void
     leaveChannel: (channelId: string) => void
-    emitTypingStart: (channelId?: string, recipientId?: string) => void
-    emitTypingStop: (channelId?: string, recipientId?: string) => void
-    sendMessage: (content: string, channelId?: string, recipientId?: string, file?: File, replyToMessageId?: string | null) => Promise<boolean>
-    sendGif: (gifUrl: string, title: string, channelId?: string, recipientId?: string, replyToMessageId?: string | null) => Promise<boolean>
+    emitTypingStart: (channelId?: string, recipientId?: string, groupChatId?: string) => void
+    emitTypingStop: (channelId?: string, recipientId?: string, groupChatId?: string) => void
+    sendMessage: (content: string, channelId?: string, recipientId?: string, file?: File, replyToMessageId?: string | null, groupChatId?: string) => Promise<boolean>
+    sendGif: (gifUrl: string, title: string, channelId?: string, recipientId?: string, replyToMessageId?: string | null, groupChatId?: string) => Promise<boolean>
     createPoll: (question: string, options: string[], channelId?: string, recipientId?: string, durationMinutes?: number, replyToMessageId?: string | null) => Promise<boolean>
     voteOnPoll: (pollId: string, optionId: string) => Promise<boolean>
     toggleReaction: (messageId: string, reaction: string) => Promise<boolean>
@@ -164,13 +181,18 @@ interface ChatState {
     deleteMessage: (messageId: string) => Promise<boolean>
     archiveMessage: (messageId: string) => Promise<boolean>
     togglePinMessage: (messageId: string) => Promise<boolean>
-    loadPinnedMessages: (chatType: 'channel' | 'dm', chatId: string) => Promise<Message[]>
-    searchMessages: (chatType: 'channel' | 'dm', chatId: string, query: string) => Promise<Message[]>
+    loadPinnedMessages: (chatType: 'channel' | 'dm' | 'group', chatId: string) => Promise<Message[]>
+    searchMessages: (chatType: 'channel' | 'dm' | 'group', chatId: string, query: string) => Promise<Message[]>
     setActiveChannel: (channelId: string | null) => void
     setActiveDM: (dmId: string | null) => void
+    setActiveGroupChat: (groupChatId: string | null) => void
+    loadGroupChats: () => Promise<void>
+    createGroupChat: (name: string, memberIds: string[]) => Promise<GroupChat | null>
+    loadGroupChatMessages: (groupChatId: string) => Promise<void>
+    leaveGroupChat: (groupChatId: string) => Promise<boolean>
     setMessageFocusTarget: (target: MessageFocusTarget | null) => void
     clearMessageFocusTarget: () => void
-    requestLatestMessageView: (chatType: 'channel' | 'dm', chatId: string) => void
+    requestLatestMessageView: (chatType: 'channel' | 'dm' | 'group', chatId: string) => void
     clearLatestMessageRequest: () => void
     restoreActiveChat: (userId: string) => void
     loadChannels: () => Promise<void>
@@ -181,17 +203,19 @@ interface ChatState {
     loadChannelFiles: (channelId: string) => Promise<void>
     loadDirectFiles: (userId: string) => Promise<void>
     upsertDirectConversation: (conversation: Partial<DirectMessage> & { id: string }) => void
-    markConversationVisited: (chatType: 'channel' | 'dm', chatId: string) => Promise<void>
+    markConversationVisited: (chatType: 'channel' | 'dm' | 'group', chatId: string) => Promise<void>
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
     socket: null,
     channels: [],
     directMessages: [],
+    groupChats: [],
     messages: {},
     filesByChatId: {},
     activeChannel: null,
     activeDM: null,
+    activeGroupChat: null,
     messageFocusTarget: null,
     latestMessageRequest: null,
     onlineUsers: [],
@@ -226,7 +250,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
             resetIdleTimer()
 
-            const { activeChannel, activeDM } = get()
+            const { activeChannel, activeDM, activeGroupChat } = get()
             if (activeChannel) {
                 socket.emit('join-channel', activeChannel)
                 void get().loadChannelMessages(activeChannel)
@@ -234,8 +258,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (activeDM) {
                 void get().loadDirectMessages(activeDM)
             }
+            if (activeGroupChat) {
+                void get().loadGroupChatMessages(activeGroupChat)
+            }
             void get().loadChannels()
             void get().loadDirectConversations()
+            void get().loadGroupChats()
+        })
+
+        socket.on('group-chats', (groupChats: GroupChat[]) => {
+            set({ groupChats: groupChats.map(normalizeGroupChat) })
+        })
+
+        socket.on('group-chat-created', (rawGroupChat: GroupChat) => {
+            const groupChat = normalizeGroupChat(rawGroupChat)
+            set((state) => ({
+                groupChats: state.groupChats.some((group) => group.id === groupChat.id)
+                    ? state.groupChats
+                    : [groupChat, ...state.groupChats],
+            }))
         })
 
         socket.on('connect_error', (error) => {
@@ -313,6 +354,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 messages,
                 activeChannel,
                 activeDM,
+                activeGroupChat,
                 channels,
             } = get()
             const existingMessages = messages[key] || []
@@ -323,7 +365,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
             const isActive = processed.channelId
                 ? processed.channelId === activeChannel
-                : key === activeDM
+                : processed.groupChatId
+                    ? processed.groupChatId === activeGroupChat
+                    : key === activeDM
             const isFocused = typeof document === 'undefined' ? true : document.hasFocus()
             const isOwnMessage = normalizedCurrentUserId
                 ? processed.senderId === normalizedCurrentUserId
@@ -352,7 +396,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     })
                     : state.channels
 
-                const nextDirectMessages = processed.channelId
+                const nextDirectMessages = processed.channelId || processed.groupChatId
                     ? state.directMessages
                     : upsertDirectConversationInList(state.directMessages, {
                         id: key,
@@ -375,6 +419,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
                             : 0,
                     })
 
+                const nextGroupChats = processed.groupChatId
+                    ? state.groupChats.map((group) => {
+                        if (group.id !== processed.groupChatId) {
+                            return group
+                        }
+
+                        return {
+                            ...group,
+                            lastMessageAt: normalizeTimestamp(processed.timestamp),
+                            unreadCount: shouldIncrementUnread
+                                ? group.unreadCount + 1
+                                : 0,
+                        }
+                    })
+                    : state.groupChats
+
                 const nextTypingUsersByChatId = key
                     ? removeTypingUserFromConversation(
                         state.typingUsersByChatId,
@@ -387,6 +447,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     messages: nextMessages,
                     channels: nextChannels,
                     directMessages: nextDirectMessages,
+                    groupChats: nextGroupChats,
                     typingUsersByChatId: nextTypingUsersByChatId,
                 }
             })
@@ -395,7 +456,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 void get().markConversationVisited('channel', processed.channelId)
             }
 
-            if (!processed.channelId && isActive && isFocused) {
+            if (processed.groupChatId && isActive && isFocused) {
+                void get().markConversationVisited('group', processed.groupChatId)
+            }
+
+            if (!processed.channelId && !processed.groupChatId && isActive && isFocused) {
                 void get().markConversationVisited('dm', key)
             }
 
@@ -403,13 +468,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const channelName = processed.channelId
                     ? channels.find((channel) => channel.id === processed.channelId)?.name || 'channel'
                     : null
+                const groupChatName = processed.groupChatId
+                    ? get().groupChats.find((group) => group.id === processed.groupChatId)?.name || 'group chat'
+                    : null
                 useNotificationStore.getState().addToast({
                     id: `${processed.id}-${Date.now()}`,
                     title: processed.senderName,
-                    body: channelName ? `New message in #${channelName}` : 'New direct message',
+                    body: channelName
+                        ? `New message in #${channelName}`
+                        : groupChatName
+                            ? `New message in ${groupChatName}`
+                            : 'New direct message',
                     target: processed.channelId
                         ? { type: 'channel', id: processed.channelId }
-                        : { type: 'dm', id: processed.senderId },
+                        : processed.groupChatId
+                            ? { type: 'group', id: processed.groupChatId }
+                            : { type: 'dm', id: processed.senderId },
                 })
             }
         })
@@ -565,27 +639,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
         socket?.emit('leave-channel', channelId)
     },
 
-    emitTypingStart: (channelId?: string, recipientId?: string) => {
+    emitTypingStart: (channelId?: string, recipientId?: string, groupChatId?: string) => {
         const { socket } = get()
         if (!socket || !socket.connected) return
 
         socket.emit('typing-start', {
             channelId: channelId ? String(channelId) : undefined,
             recipientId: recipientId ? String(recipientId) : undefined,
+            groupChatId: groupChatId ? String(groupChatId) : undefined,
         })
     },
 
-    emitTypingStop: (channelId?: string, recipientId?: string) => {
+    emitTypingStop: (channelId?: string, recipientId?: string, groupChatId?: string) => {
         const { socket } = get()
         if (!socket || !socket.connected) return
 
         socket.emit('typing-stop', {
             channelId: channelId ? String(channelId) : undefined,
             recipientId: recipientId ? String(recipientId) : undefined,
+            groupChatId: groupChatId ? String(groupChatId) : undefined,
         })
     },
 
-    sendMessage: async (content: string, channelId?: string, recipientId?: string, file?: File, replyToMessageId?: string | null) => {
+    sendMessage: async (content: string, channelId?: string, recipientId?: string, file?: File, replyToMessageId?: string | null, groupChatId?: string) => {
         const { socket } = get()
 
         if (file) {
@@ -610,6 +686,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 content: string
                 channelId?: string
                 recipientId?: string
+                groupChatId?: string
                 replyToMessageId?: string | null
                 cipherText?: string
                 cipherIv?: string
@@ -618,6 +695,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 content,
                 channelId,
                 recipientId,
+                groupChatId,
                 replyToMessageId,
             }
 
@@ -659,6 +737,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
 
             const sendMessageViaHttp = async () => {
+                if (groupChatId) {
+                    console.error('Group chat messages require an active connection')
+                    return false
+                }
+
                 try {
                     await axios.post(`${API_URL}/messages`, payload)
 
@@ -700,6 +783,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                             await get().loadChannelMessages(String(channelId))
                         } else if (recipientId) {
                             await get().loadDirectMessages(String(recipientId))
+                        } else if (groupChatId) {
+                            await get().loadGroupChatMessages(String(groupChatId))
                         }
 
                         resolve(true)
@@ -709,7 +794,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
     },
 
-    sendGif: async (gifUrl: string, title: string, channelId?: string, recipientId?: string, replyToMessageId?: string | null) => {
+    sendGif: async (gifUrl: string, title: string, channelId?: string, recipientId?: string, replyToMessageId?: string | null, groupChatId?: string) => {
         const { socket } = get()
 
         if (!socket || !socket.connected) {
@@ -720,7 +805,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return new Promise((resolve) => {
             socket.emit(
                 'gif-message',
-                { gifUrl, title, channelId, recipientId, replyToMessageId },
+                { gifUrl, title, channelId, recipientId, groupChatId, replyToMessageId },
                 (response: { ok: boolean; message?: string }) => {
                     if (!response?.ok) {
                         console.error('GIF send failed:', response?.message)
@@ -922,7 +1007,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const token = localStorage.getItem('token')
             const path = chatType === 'channel'
                 ? `${API_URL}/messages/channel/${chatId}/pinned`
-                : `${API_URL}/messages/direct/${chatId}/pinned`
+                : chatType === 'group'
+                    ? `${API_URL}/messages/group/${chatId}/pinned`
+                    : `${API_URL}/messages/direct/${chatId}/pinned`
             const response = await axios.get(path, {
                 headers: { Authorization: `Bearer ${token}` }
             })
@@ -938,7 +1025,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     searchMessages: async (chatType, chatId, query) => {
         try {
             const token = localStorage.getItem('token')
-            const param = chatType === 'channel' ? `channelId=${chatId}` : `recipientId=${chatId}`
+            const param = chatType === 'channel'
+                ? `channelId=${chatId}`
+                : chatType === 'group'
+                    ? `groupChatId=${chatId}`
+                    : `recipientId=${chatId}`
             const response = await axios.get(`${API_URL}/messages/search?q=${encodeURIComponent(query)}&${param}`, {
                 headers: { Authorization: `Bearer ${token}` }
             })
@@ -969,6 +1060,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set((state) => ({
             activeChannel: normalizedChannelId,
             activeDM: null,
+            activeGroupChat: null,
             channels: normalizedChannelId
                 ? state.channels.map((channel) =>
                     channel.id === normalizedChannelId
@@ -1000,6 +1092,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set((state) => ({
             activeDM: normalizedDmId,
             activeChannel: null,
+            activeGroupChat: null,
             directMessages: normalizedDmId
                 ? upsertDirectConversationInList(state.directMessages, {
                     id: normalizedDmId,
@@ -1011,6 +1104,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         if (normalizedDmId) {
             void get().markConversationVisited('dm', normalizedDmId)
+        }
+    },
+
+    setActiveGroupChat: (groupChatId: string | null) => {
+        const normalizedGroupChatId = groupChatId ? String(groupChatId) : null
+        const { socket, activeChannel } = get()
+
+        if (activeChannel) {
+            socket?.emit('leave-channel', activeChannel)
+        }
+
+        if (normalizedGroupChatId) {
+            persistActiveChat({ type: 'group', id: normalizedGroupChatId })
+        } else {
+            clearPersistedActiveChat()
+        }
+
+        set((state) => ({
+            activeGroupChat: normalizedGroupChatId,
+            activeChannel: null,
+            activeDM: null,
+            groupChats: normalizedGroupChatId
+                ? state.groupChats.map((group) =>
+                    group.id === normalizedGroupChatId
+                        ? { ...group, unreadCount: 0 }
+                        : group,
+                )
+                : state.groupChats,
+        }))
+
+        if (normalizedGroupChatId) {
+            void get().markConversationVisited('group', normalizedGroupChatId)
         }
     },
 
@@ -1042,12 +1167,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         if (!persisted || persisted.userId !== normalizedUserId) {
             clearPersistedActiveChat()
-            set({ activeChannel: null, activeDM: null })
+            set({ activeChannel: null, activeDM: null, activeGroupChat: null })
             return
         }
 
         if (persisted.type === 'channel') {
             get().setActiveChannel(persisted.id)
+            return
+        }
+
+        if (persisted.type === 'group') {
+            get().setActiveGroupChat(persisted.id)
             return
         }
 
@@ -1228,6 +1358,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     unreadCount: 0,
                 })
                 : state.directMessages,
+            groupChats: chatType === 'group'
+                ? state.groupChats.map((group) =>
+                    group.id === normalizedChatId
+                        ? { ...group, unreadCount: 0 }
+                        : group,
+                )
+                : state.groupChats,
         }))
 
         try {
@@ -1236,9 +1373,74 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 return
             }
 
+            if (chatType === 'group') {
+                await axios.post(`${API_URL}/group-chats/${normalizedChatId}/visit`)
+                return
+            }
+
             await axios.post(`${API_URL}/messages/direct/${normalizedChatId}/visit`)
         } catch (error) {
             console.error(`Error marking ${chatType} visited:`, error)
+        }
+    },
+
+    loadGroupChats: async () => {
+        try {
+            const response = await axios.get(`${API_URL}/group-chats`)
+            set({ groupChats: response.data.map(normalizeGroupChat) })
+        } catch (error) {
+            console.error('Error loading group chats:', error)
+        }
+    },
+
+    createGroupChat: async (name: string, memberIds: string[]) => {
+        try {
+            const response = await axios.post(`${API_URL}/group-chats`, { name, memberIds })
+            const groupChat = normalizeGroupChat(response.data)
+            set((state) => ({ groupChats: [groupChat, ...state.groupChats] }))
+            return groupChat
+        } catch (error) {
+            console.error('Error creating group chat:', error)
+            return null
+        }
+    },
+
+    loadGroupChatMessages: async (groupChatId: string) => {
+        try {
+            const token = localStorage.getItem('token')
+            const response = await axios.get(`${API_URL}/messages/group/${groupChatId}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            })
+            const processed = await Promise.all(
+                response.data.map((message: Message) => processIncomingMessage(message))
+            )
+            set((state) => ({
+                messages: {
+                    ...state.messages,
+                    [groupChatId]: mergeConversationMessages([], processed)
+                },
+                groupChats: state.groupChats.map((group) =>
+                    group.id === String(groupChatId)
+                        ? { ...group, unreadCount: 0 }
+                        : group,
+                ),
+            }))
+        } catch (error) {
+            console.error('Error loading group chat messages:', error)
+        }
+    },
+
+    leaveGroupChat: async (groupChatId: string) => {
+        try {
+            await axios.post(`${API_URL}/group-chats/${groupChatId}/leave`)
+            set((state) => ({
+                groupChats: state.groupChats.filter((group) => group.id !== String(groupChatId)),
+                activeGroupChat: state.activeGroupChat === String(groupChatId) ? null : state.activeGroupChat,
+            }))
+            return true
+        } catch (error) {
+            console.error('Error leaving group chat:', error)
+            return false
         }
     },
 }))
@@ -1402,6 +1604,14 @@ const normalizeChannel = (channel: Channel): Channel => ({
     lastMessageAt: channel.lastMessageAt || null,
 })
 
+const normalizeGroupChat = (group: GroupChat): GroupChat => ({
+    ...group,
+    id: String(group.id),
+    members: (group.members || []).map((member) => ({ ...member, id: String(member.id) })),
+    unreadCount: Number(group.unreadCount || 0),
+    lastMessageAt: group.lastMessageAt || null,
+})
+
 const normalizeDirectConversation = (
     conversation: Partial<DirectMessage> & { id: string },
 ): DirectMessage => {
@@ -1522,17 +1732,22 @@ const normalizeMessage = (message: Message): Message => ({
     senderId: String(message.senderId),
     channelId: normalizeOptionalId(message.channelId),
     recipientId: normalizeOptionalId(message.recipientId),
+    groupChatId: normalizeOptionalId(message.groupChatId),
     replyToMessageId: normalizeOptionalId(message.replyToMessageId),
     threadRootMessageId: normalizeOptionalId(message.threadRootMessageId),
     replyContext: normalizeReplyContext(message.replyContext),
 })
 
 const getConversationKey = (
-    message: Pick<Message, 'channelId' | 'recipientId' | 'senderId'>,
+    message: Pick<Message, 'channelId' | 'recipientId' | 'senderId' | 'groupChatId'>,
     currentUserId?: string | number | null,
 ) => {
     if (message.channelId) {
         return String(message.channelId)
+    }
+
+    if (message.groupChatId) {
+        return String(message.groupChatId)
     }
 
     const normalizedCurrentUserId =

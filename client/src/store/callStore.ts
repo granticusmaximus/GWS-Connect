@@ -10,7 +10,7 @@ export interface CallParticipant {
 
 export interface IncomingCall {
     callId: string
-    chatType: 'channel' | 'dm'
+    chatType: 'channel' | 'dm' | 'group'
     chatId: string
     fromUserId: string
     fromUsername: string
@@ -24,7 +24,7 @@ interface PeerEntry {
 
 interface CallState {
     activeCallId: string | null
-    activeChatType: 'channel' | 'dm' | null
+    activeChatType: 'channel' | 'dm' | 'group' | null
     activeChatId: string | null
     localStream: MediaStream | null
     participants: Record<string, CallParticipant>
@@ -33,7 +33,7 @@ interface CallState {
     isCameraOff: boolean
     isScreenSharing: boolean
     isConnecting: boolean
-    startCall: (chatType: 'channel' | 'dm', chatId: string, withVideo: boolean) => Promise<void>
+    startCall: (chatType: 'channel' | 'dm' | 'group', chatId: string, withVideo: boolean) => Promise<void>
     acceptIncomingCall: () => Promise<void>
     declineIncomingCall: () => void
     leaveCall: () => void

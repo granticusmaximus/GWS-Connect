@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useChatStore } from '../store/chatStore'
-import { HashtagIcon, PlusIcon, UserCircleIcon, XMarkIcon } from '@heroicons/react/24/outline'
+import { HashtagIcon, PlusIcon, UserCircleIcon, UserGroupIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import UserSearchModal from './UserSearchModal'
 import ChannelModal from './ChannelModal'
+import GroupChatModal from './GroupChatModal'
 
 interface SidebarProps {
   isMobileOpen?: boolean
@@ -14,17 +15,26 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
   const {
     channels,
     directMessages,
+    groupChats,
     activeChannel,
     activeDM,
+    activeGroupChat,
     setActiveChannel,
     setActiveDM,
+    setActiveGroupChat,
     loadChannels,
+    loadGroupChats,
     requestLatestMessageView,
     onlineUsers,
     presenceByUserId,
   } = useChatStore()
   const [showUserSearch, setShowUserSearch] = useState(false)
   const [showChannelModal, setShowChannelModal] = useState(false)
+  const [showGroupChatModal, setShowGroupChatModal] = useState(false)
+
+  useEffect(() => {
+    void loadGroupChats()
+  }, [loadGroupChats])
 
   const handleChannelSelect = (channelId: string) => {
     requestLatestMessageView('channel', channelId)
@@ -35,6 +45,12 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
   const handleDirectMessageSelect = (userId: string) => {
     requestLatestMessageView('dm', userId)
     setActiveDM(userId)
+    onChatSelect?.()
+  }
+
+  const handleGroupChatSelect = (groupChatId: string) => {
+    requestLatestMessageView('group', groupChatId)
+    setActiveGroupChat(groupChatId)
     onChatSelect?.()
   }
 
@@ -122,6 +138,49 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
         </div>
       </div>
 
+      {/* Group Chats Section */}
+      <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase">
+            Group Chats
+          </h2>
+          <button
+            onClick={() => setShowGroupChatModal(true)}
+            className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+            aria-label="Add group chat"
+          >
+            <PlusIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
+          </button>
+        </div>
+        <div className="space-y-1">
+          {groupChats.length === 0 ? (
+            <div className="text-sm text-gray-500 dark:text-gray-400 text-center py-2">
+              No group chats yet
+            </div>
+          ) : (
+            groupChats.map((group) => (
+              <button
+                key={group.id}
+                onClick={() => handleGroupChatSelect(group.id)}
+                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+                  activeGroupChat === group.id
+                    ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
+                    : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
+                }`}
+              >
+                <UserGroupIcon className="w-5 h-5 flex-shrink-0" />
+                <span className="text-sm font-medium truncate flex-1 text-left">{group.name}</span>
+                {group.unreadCount > 0 && (
+                  <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-primary-600 px-1.5 py-0.5 text-[11px] font-semibold leading-none text-white">
+                    {formatUnreadCount(group.unreadCount)}
+                  </span>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+
       {/* Direct Messages Section */}
       <div className="flex-1 p-4 overflow-y-auto">
         <div className="flex items-center justify-between mb-3">
@@ -197,11 +256,18 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
       />
 
       {/* Channel Modal */}
-      <ChannelModal 
+      <ChannelModal
         isOpen={showChannelModal}
         onClose={() => setShowChannelModal(false)}
         onSuccess={() => loadChannels()}
         mode="create"
+      />
+
+      {/* Group Chat Modal */}
+      <GroupChatModal
+        isOpen={showGroupChatModal}
+        onClose={() => setShowGroupChatModal(false)}
+        onCreated={onChatSelect}
       />
     </div>
   )

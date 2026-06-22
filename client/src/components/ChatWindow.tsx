@@ -200,24 +200,28 @@ export default function ChatWindow() {
   const navigate = useNavigate()
   const { 
     socket,
-    activeChannel, 
-    channels, 
+    activeChannel,
+    channels,
     directMessages,
-    messages, 
-    activeDM, 
+    groupChats,
+    messages,
+    activeDM,
+    activeGroupChat,
     messageFocusTarget,
     latestMessageRequest,
     clearMessageFocusTarget,
     clearLatestMessageRequest,
-    loadChannels, 
-    loadChannelMessages, 
+    loadChannels,
+    loadChannelMessages,
     loadDirectMessages,
-    loadChannelFiles, 
-    loadDirectFiles, 
-    filesByChatId, 
-    sendMessage, 
-    toggleReaction, 
-    editMessage, 
+    loadGroupChatMessages,
+    leaveGroupChat,
+    loadChannelFiles,
+    loadDirectFiles,
+    filesByChatId,
+    sendMessage,
+    toggleReaction,
+    editMessage,
     deleteMessage,
     archiveMessage,
     togglePinMessage,
@@ -263,8 +267,8 @@ export default function ChatWindow() {
   const highlightTimeoutRef = useRef<number | null>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
-  const currentChatId = activeChannel || activeDM
-  const currentChatType = activeChannel ? 'channel' : activeDM ? 'dm' : null
+  const currentChatId = activeChannel || activeDM || activeGroupChat
+  const currentChatType = activeChannel ? 'channel' : activeDM ? 'dm' : activeGroupChat ? 'group' : null
   const currentMessages = useMemo(() => 
     currentChatId ? messages[currentChatId] || [] : [],
     [currentChatId, messages]
@@ -289,6 +293,10 @@ export default function ChatWindow() {
           conversation.userId === activeDM || conversation.id === activeDM,
       ) || null,
     [activeDM, directMessages],
+  )
+  const currentGroupChat = useMemo(
+    () => groupChats.find((group) => group.id === activeGroupChat) || null,
+    [activeGroupChat, groupChats],
   )
 
   const reactionOptions = useMemo(() => [
@@ -360,6 +368,12 @@ export default function ChatWindow() {
   }, [activeDM, loadDirectMessages])
 
   useEffect(() => {
+    if (activeGroupChat) {
+      loadGroupChatMessages(activeGroupChat)
+    }
+  }, [activeGroupChat, loadGroupChatMessages])
+
+  useEffect(() => {
     if (!activeChannel && activeTab === 'members') {
       setActiveTab('messages')
     }
@@ -390,10 +404,12 @@ export default function ChatWindow() {
     if (activeTab !== 'pinned') return
     if (activeChannel) {
       void loadPinnedMessages('channel', activeChannel).then(setPinnedMessages)
+    } else if (activeGroupChat) {
+      void loadPinnedMessages('group', activeGroupChat).then(setPinnedMessages)
     } else if (activeDM) {
       void loadPinnedMessages('dm', activeDM).then(setPinnedMessages)
     }
-  }, [activeTab, activeChannel, activeDM, loadPinnedMessages])
+  }, [activeTab, activeChannel, activeGroupChat, activeDM, loadPinnedMessages])
 
   useEffect(() => {
     if (!socket) return
@@ -1612,15 +1628,22 @@ export default function ChatWindow() {
       <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 sm:px-6 py-3 sm:py-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex items-center space-x-3 min-w-0">
-            <HashtagIcon className="w-6 h-6 text-gray-600 dark:text-gray-400" />
+            {currentGroupChat ? (
+              <UserGroupIcon className="w-6 h-6 text-gray-600 dark:text-gray-400" />
+            ) : (
+              <HashtagIcon className="w-6 h-6 text-gray-600 dark:text-gray-400" />
+            )}
             <div>
               <h3 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white truncate">
-                {currentChannel?.name || currentDirectConversation?.username || 'Direct Message'}
+                {currentChannel?.name || currentGroupChat?.name || currentDirectConversation?.username || 'Direct Message'}
               </h3>
               <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">
-                {currentChannel?.description || (currentDirectConversation
-                  ? `Direct message with ${currentDirectConversation.username}`
-                  : 'Private conversation')}
+                {currentChannel?.description
+                  || (currentGroupChat
+                    ? `${currentGroupChat.members.length} members`
+                    : currentDirectConversation
+                      ? `Direct message with ${currentDirectConversation.username}`
+                      : 'Private conversation')}
               </p>
             </div>
             {canEditChannel && activeChannel && (
@@ -1656,9 +1679,36 @@ export default function ChatWindow() {
                 <VideoCameraIcon className="w-4 h-4" />
                 <span className="hidden sm:inline">Video</span>
               </button>
+              {currentGroupChat && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm('Leave this group chat?')) {
+                      void leaveGroupChat(currentGroupChat.id)
+                    }
+                  }}
+                  className="flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 transition hover:bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-950/30"
+                  title="Leave group"
+                >
+                  <span className="hidden sm:inline">Leave</span>
+                </button>
+              )}
             </div>
           )}
         </div>
+
+        {currentGroupChat && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+            {currentGroupChat.members.map((member) => (
+              <span
+                key={member.id}
+                className="rounded-full bg-gray-100 px-2 py-0.5 dark:bg-gray-700"
+              >
+                {member.username}
+              </span>
+            ))}
+          </div>
+        )}
 
         <div className="mt-3 flex items-center gap-2">
           <button
@@ -1712,6 +1762,7 @@ export default function ChatWindow() {
           <MessageInput
             channelId={activeChannel || undefined}
             recipientId={activeDM || undefined}
+            groupChatId={activeGroupChat || undefined}
             onSelectFile={(file) => {
               setPendingFile(file)
               setPendingName(file.name)

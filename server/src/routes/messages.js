@@ -9,6 +9,7 @@ import {
 	getChannelMessages,
 	getDirectConversationSummaries,
 	getDirectMessages,
+	getGroupChatMessages,
 	getMessageFileById,
 	getChannelFiles,
 	getDirectFiles,
@@ -28,6 +29,7 @@ import {
 	getChannelMembers,
 	markChannelVisited,
 } from '../models/Channel.js';
+import { canAccessGroupChat, markGroupChatVisited } from '../models/GroupChat.js';
 import { canSendMessage, getUserRole } from '../middleware/roles.js';
 import { findUserById } from '../models/User.js';
 import {
@@ -172,6 +174,7 @@ const formatMessages = (messages, viewerId) => {
 			senderAvatar: msg.senderAvatar,
 			channelId: msg.channelId,
 			recipientId: msg.recipientId,
+			groupChatId: msg.groupChatId,
 			cipherText: msg.cipherText,
 			cipherIv: msg.cipherIv,
 			isEncrypted: msg.isEncrypted,
@@ -258,7 +261,7 @@ router.post(
 router.get('/search', authenticateToken, async (req, res) => {
 	try {
 		const query = String(req.query.q || '').trim();
-		const { channelId, recipientId } = req.query;
+		const { channelId, recipientId, groupChatId } = req.query;
 
 		if (query.length < 2) {
 			return res.status(400).json({ message: 'Search query must be at least 2 characters' });
@@ -272,13 +275,22 @@ router.get('/search', authenticateToken, async (req, res) => {
 			if (!access.allowed) {
 				return res.status(403).json({ message: access.reason });
 			}
+		} else if (groupChatId) {
+			const access = canAccessGroupChat(groupChatId, req.user.id);
+			if (!access.groupChat) {
+				return res.status(404).json({ message: 'Group chat not found' });
+			}
+			if (!access.allowed) {
+				return res.status(403).json({ message: access.reason });
+			}
 		} else if (!recipientId) {
-			return res.status(400).json({ message: 'channelId or recipientId is required' });
+			return res.status(400).json({ message: 'channelId, recipientId, or groupChatId is required' });
 		}
 
 		const messages = searchMessages(query, {
 			channelId: channelId || null,
 			recipientId: recipientId || null,
+			groupChatId: groupChatId || null,
 			currentUserId: req.user.id,
 		});
 		res.json(formatMessages(messages, req.user.id));
@@ -362,6 +374,59 @@ router.post('/direct/:userId/visit', authenticateToken, async (req, res) => {
 		return res.json({ ok: true });
 	} catch (error) {
 		return res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.get('/group/:groupChatId', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
+		if (!access.groupChat) {
+			return res.status(404).json({ message: 'Group chat not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const messages = getGroupChatMessages(req.params.groupChatId);
+		const formattedMessages = formatMessages(messages, req.user.id);
+		markGroupChatVisited(req.user.id, req.params.groupChatId);
+		res.json(formattedMessages);
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.post('/group/:groupChatId/visit', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
+		if (!access.groupChat) {
+			return res.status(404).json({ message: 'Group chat not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		markGroupChatVisited(req.user.id, req.params.groupChatId);
+		res.json({ ok: true });
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.get('/group/:groupChatId/pinned', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
+		if (!access.groupChat) {
+			return res.status(404).json({ message: 'Group chat not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const messages = getPinnedMessages(null, null, req.user.id, req.params.groupChatId);
+		res.json(formatMessages(messages, req.user.id));
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
 	}
 });
 
