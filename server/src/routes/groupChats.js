@@ -6,9 +6,11 @@ import {
 	createGroupChat,
 	findGroupChatById,
 	findGroupChatsForUser,
+	getGroupChatKeyForUser,
 	getGroupChatMembers,
 	markGroupChatVisited,
 	removeGroupChatMember,
+	upsertGroupChatKeys,
 } from '../models/GroupChat.js';
 
 const router = express.Router();
@@ -26,7 +28,7 @@ router.get('/', authenticateToken, async (req, res) => {
 // Create a group chat
 router.post('/', authenticateToken, async (req, res) => {
 	try {
-		const { name, memberIds } = req.body;
+		const { name, memberIds, keys } = req.body;
 		const trimmedName = String(name || '').trim();
 
 		if (!trimmedName) {
@@ -44,6 +46,19 @@ router.post('/', authenticateToken, async (req, res) => {
 		const groupChatId = createGroupChat(trimmedName, req.user.id, normalizedMemberIds);
 		const groupChat = findGroupChatById(groupChatId);
 		const members = getGroupChatMembers(groupChatId);
+		const memberIdSet = new Set(members.map((member) => Number(member.id)));
+
+		if (Array.isArray(keys)) {
+			const validKeys = keys
+				.filter((key) => memberIdSet.has(Number(key.userId)) && key.wrappedKey && key.wrappedIv)
+				.map((key) => ({
+					userId: Number(key.userId),
+					wrappedKey: String(key.wrappedKey),
+					wrappedIv: String(key.wrappedIv),
+					wrappedByUserId: req.user.id,
+				}));
+			upsertGroupChatKeys(groupChatId, validKeys);
+		}
 
 		const payload = {
 			...groupChat,
@@ -88,6 +103,27 @@ router.get('/:groupChatId', authenticateToken, async (req, res) => {
 	}
 });
 
+router.get('/:groupChatId/keys/me', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
+		if (!access.groupChat) {
+			return res.status(404).json({ message: 'Group chat not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const key = getGroupChatKeyForUser(req.params.groupChatId, req.user.id);
+		if (!key) {
+			return res.status(404).json({ message: 'Encryption key not yet available' });
+		}
+
+		res.json(key);
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
 router.post('/:groupChatId/visit', authenticateToken, async (req, res) => {
 	try {
 		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
@@ -122,6 +158,14 @@ router.post('/:groupChatId/members', authenticateToken, async (req, res) => {
 		}
 
 		addGroupChatMember(req.params.groupChatId, userId);
+
+		const { wrappedKey, wrappedIv } = req.body;
+		if (wrappedKey && wrappedIv) {
+			upsertGroupChatKeys(req.params.groupChatId, [
+				{ userId, wrappedKey: String(wrappedKey), wrappedIv: String(wrappedIv), wrappedByUserId: req.user.id },
+			]);
+		}
+
 		const groupChat = findGroupChatById(req.params.groupChatId);
 		const members = getGroupChatMembers(req.params.groupChatId);
 

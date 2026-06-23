@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { io, Socket } from 'socket.io-client'
 import axios from 'axios'
 import { API_URL, SOCKET_URL } from '../config/runtime'
-import { getSharedKey, decryptMessage, encryptMessage } from '../utils/e2ee'
+import { getSharedKey, decryptMessage, encryptMessage, generateGroupKey, getGroupKey, wrapGroupKeyForMember, cacheGroupKey } from '../utils/e2ee'
 import type { MessageMention } from '../utils/mentions'
 import { useAuthStore } from './authStore'
 import { useNotificationStore, type InAppNotification } from './notificationStore'
@@ -174,7 +174,7 @@ interface ChatState {
     emitTypingStop: (channelId?: string, recipientId?: string, groupChatId?: string) => void
     sendMessage: (content: string, channelId?: string, recipientId?: string, file?: File, replyToMessageId?: string | null, groupChatId?: string) => Promise<boolean>
     sendGif: (gifUrl: string, title: string, channelId?: string, recipientId?: string, replyToMessageId?: string | null, groupChatId?: string) => Promise<boolean>
-    createPoll: (question: string, options: string[], channelId?: string, recipientId?: string, durationMinutes?: number, replyToMessageId?: string | null) => Promise<boolean>
+    createPoll: (question: string, options: string[], channelId?: string, recipientId?: string, durationMinutes?: number, replyToMessageId?: string | null, groupChatId?: string) => Promise<boolean>
     voteOnPoll: (pollId: string, optionId: string) => Promise<boolean>
     toggleReaction: (messageId: string, reaction: string) => Promise<boolean>
     editMessage: (messageId: string, content: string) => Promise<boolean>
@@ -671,6 +671,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 if (content) formData.append('content', content)
                 if (channelId) formData.append('channelId', channelId)
                 if (recipientId) formData.append('recipientId', recipientId)
+                if (groupChatId) formData.append('groupChatId', groupChatId)
                 if (replyToMessageId) formData.append('replyToMessageId', replyToMessageId)
 
                 await axios.post(`${API_URL}/messages/upload`, formData, {
@@ -727,6 +728,39 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     }
                 } catch (error) {
                     console.error('DM encryption failed:', error)
+                    useNotificationStore.getState().addToast({
+                        id: `e2ee-error-${Date.now()}`,
+                        title: 'Message not sent',
+                        body: 'Failed to encrypt this message. Please try again.',
+                    })
+                    return false
+                }
+            } else if (groupChatId) {
+                const { e2eePrivateKey, user } = useAuthStore.getState()
+
+                if (!e2eePrivateKey || !user) {
+                    useNotificationStore.getState().addToast({
+                        id: `e2ee-error-${Date.now()}`,
+                        title: 'Message not sent',
+                        body: 'End-to-end encryption is not ready yet. Please try again in a moment.',
+                    })
+                    return false
+                }
+
+                try {
+                    const groupKey = await getGroupKey(String(groupChatId), e2eePrivateKey)
+                    const encrypted = await encryptMessage(content, groupKey)
+
+                    payload = {
+                        content: '',
+                        groupChatId,
+                        replyToMessageId,
+                        cipherText: encrypted.cipherText,
+                        cipherIv: encrypted.iv,
+                        isEncrypted: true,
+                    }
+                } catch (error) {
+                    console.error('Group chat encryption failed:', error)
                     useNotificationStore.getState().addToast({
                         id: `e2ee-error-${Date.now()}`,
                         title: 'Message not sent',
@@ -818,7 +852,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
     },
 
-    createPoll: async (question, options, channelId, recipientId, durationMinutes, replyToMessageId) => {
+    createPoll: async (question, options, channelId, recipientId, durationMinutes, replyToMessageId, groupChatId) => {
         const { socket } = get()
 
         if (!socket || !socket.connected) {
@@ -829,7 +863,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return new Promise((resolve) => {
             socket.emit(
                 'poll-create',
-                { question, options, channelId, recipientId, durationMinutes, replyToMessageId },
+                { question, options, channelId, recipientId, groupChatId, durationMinutes, replyToMessageId },
                 (response: { ok: boolean; message?: string }) => {
                     if (!response?.ok) {
                         console.error('Poll create failed:', response?.message)
@@ -1394,9 +1428,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
 
     createGroupChat: async (name: string, memberIds: string[]) => {
+        const { e2eePrivateKey, user } = useAuthStore.getState()
+
+        if (!e2eePrivateKey || !user) {
+            console.error('End-to-end encryption is not ready yet')
+            return null
+        }
+
         try {
-            const response = await axios.post(`${API_URL}/group-chats`, { name, memberIds })
+            const groupKey = await generateGroupKey()
+            const allMemberIds = [...new Set([String(user.id), ...memberIds.map(String)])]
+            const keys = await Promise.all(
+                allMemberIds.map(async (memberId) => {
+                    const { wrappedKey, wrappedIv } = await wrapGroupKeyForMember(groupKey, e2eePrivateKey, memberId)
+                    return { userId: memberId, wrappedKey, wrappedIv }
+                })
+            )
+
+            const response = await axios.post(`${API_URL}/group-chats`, { name, memberIds, keys })
             const groupChat = normalizeGroupChat(response.data)
+            cacheGroupKey(groupChat.id, groupKey)
+
             set((state) => ({ groupChats: [groupChat, ...state.groupChats] }))
             return groupChat
         } catch (error) {
@@ -1554,6 +1606,17 @@ const processIncomingMessage = async (message: Message) => {
     const { e2eePrivateKey, user } = useAuthStore.getState()
     if (!e2eePrivateKey || !user) {
         return { ...normalizedMessage, content: '[Encrypted message]' }
+    }
+
+    if (normalizedMessage.groupChatId) {
+        try {
+            const groupKey = await getGroupKey(String(normalizedMessage.groupChatId), e2eePrivateKey)
+            const content = await decryptMessage(normalizedMessage.cipherText, normalizedMessage.cipherIv, groupKey)
+            return { ...normalizedMessage, content }
+        } catch (error) {
+            console.error('E2EE group decrypt failed:', error)
+            return { ...normalizedMessage, content: '[Encrypted message]' }
+        }
     }
 
     const peerId = normalizedMessage.senderId === String(user.id)

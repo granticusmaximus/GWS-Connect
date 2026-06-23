@@ -29,7 +29,7 @@ import {
 	getChannelMembers,
 	markChannelVisited,
 } from '../models/Channel.js';
-import { canAccessGroupChat, markGroupChatVisited } from '../models/GroupChat.js';
+import { canAccessGroupChat, getGroupChatMembers, markGroupChatVisited } from '../models/GroupChat.js';
 import { canSendMessage, getUserRole } from '../middleware/roles.js';
 import { findUserById } from '../models/User.js';
 import {
@@ -85,10 +85,15 @@ const replyBelongsToConversation = ({
 	replyMessage,
 	channelId,
 	recipientId,
+	groupChatId,
 	currentUserId,
 }) => {
 	if (channelId) {
 		return normalizeId(replyMessage.channelId) === normalizeId(channelId);
+	}
+
+	if (groupChatId) {
+		return normalizeId(replyMessage.groupChatId) === normalizeId(groupChatId);
 	}
 
 	if (!recipientId) {
@@ -110,6 +115,7 @@ const resolveReplyState = ({
 	replyToMessageId,
 	channelId,
 	recipientId,
+	groupChatId,
 	currentUserId,
 }) => {
 	if (!replyToMessageId) {
@@ -131,6 +137,7 @@ const resolveReplyState = ({
 			replyMessage,
 			channelId,
 			recipientId,
+			groupChatId,
 			currentUserId,
 		})
 	) {
@@ -651,7 +658,7 @@ router.post(
 	upload.single('file'),
 	async (req, res) => {
 		try {
-			const { channelId, recipientId, content, replyToMessageId } =
+			const { channelId, recipientId, groupChatId, content, replyToMessageId } =
 				req.body || {};
 			const file = req.file;
 
@@ -659,15 +666,17 @@ router.post(
 				return res.status(400).json({ message: 'File required' });
 			}
 
-			if (!channelId && !recipientId) {
+			const targetCount = [channelId, recipientId, groupChatId].filter(Boolean).length;
+
+			if (targetCount === 0) {
 				return res
 					.status(400)
 					.json({ message: 'Conversation target required' });
 			}
 
-			if (channelId && recipientId) {
+			if (targetCount > 1) {
 				return res.status(400).json({
-					message: 'Provide either channelId or recipientId, not both',
+					message: 'Provide exactly one of channelId, recipientId, or groupChatId',
 				});
 			}
 
@@ -696,10 +705,21 @@ router.post(
 				}
 			}
 
+			if (groupChatId) {
+				const access = canAccessGroupChat(groupChatId, req.user.id);
+				if (!access.groupChat) {
+					return res.status(404).json({ message: 'Group chat not found' });
+				}
+				if (!access.allowed) {
+					return res.status(403).json({ message: access.reason });
+				}
+			}
+
 			const replyState = resolveReplyState({
 				replyToMessageId,
 				channelId,
 				recipientId,
+				groupChatId,
 				currentUserId: req.user.id,
 			});
 
@@ -721,6 +741,7 @@ router.post(
 				0,
 				replyState.replyToMessageId,
 				replyState.threadRootMessageId,
+				groupChatId || null,
 			);
 
 			const fileUrl = `/api/messages/file/${messageId}`;
@@ -737,6 +758,7 @@ router.post(
 				senderAvatar: sender?.avatar || null,
 				channelId: channelId || null,
 				recipientId: recipientId || null,
+				groupChatId: groupChatId || null,
 				fileUrl,
 				fileName: file.originalname,
 				fileType: file.mimetype,
@@ -749,7 +771,24 @@ router.post(
 			};
 
 			const io = req.app.get('io');
-			if (channelId) {
+			if (groupChatId) {
+				io.to(`group:${groupChatId}`).emit('message', message);
+
+				const { sendPushToUser } = await import('../services/push.js');
+				const members = getGroupChatMembers(groupChatId);
+				await Promise.all(
+					members
+						.filter((member) => String(member.id) !== String(req.user.id))
+						.map((member) =>
+							sendPushToUser(member.id, {
+								title: 'GWS Connect',
+								body: `New file shared in group from ${req.user.username}`,
+								icon: '/gws-connect-favicon.svg',
+								url: '/dashboard',
+							}),
+						),
+				);
+			} else if (channelId) {
 				io.to(`channel:${channelId}`).emit('message', message);
 
 				// Send mention notifications for file uploads with content

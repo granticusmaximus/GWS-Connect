@@ -358,6 +358,19 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_group_chat_visits_group
     ON group_chat_visits(groupChatId, userId, lastVisitedAt);
+
+  CREATE TABLE IF NOT EXISTS group_chat_keys (
+    groupChatId INTEGER NOT NULL,
+    userId INTEGER NOT NULL,
+    wrappedKey TEXT NOT NULL,
+    wrappedIv TEXT NOT NULL,
+    wrappedByUserId INTEGER NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (groupChatId, userId),
+    FOREIGN KEY (groupChatId) REFERENCES group_chats(id) ON DELETE CASCADE,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (wrappedByUserId) REFERENCES users(id) ON DELETE CASCADE
+  );
 `);
 
 if (!messageColumns.includes('groupChatId')) {

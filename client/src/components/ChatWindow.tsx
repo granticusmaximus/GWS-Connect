@@ -672,6 +672,7 @@ export default function ChatWindow() {
       activeDM || undefined,
       fileToSend,
       replyTargetMessage?.id,
+      activeGroupChat || undefined,
     )
     if (sent) {
       resetPendingUpload()

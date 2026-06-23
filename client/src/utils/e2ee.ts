@@ -3,6 +3,7 @@ import { API_URL } from '../config/runtime'
 
 const publicKeyCache = new Map<string, JsonWebKey>()
 const sharedKeyCache = new Map<string, CryptoKey>()
+const groupKeyCache = new Map<string, CryptoKey>()
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -179,7 +180,67 @@ export const decryptMessage = async (
     return decoder.decode(plaintext)
 }
 
+export const generateGroupKey = async () =>
+    crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt'])
+
+const exportRawKey = async (key: CryptoKey) => {
+    const raw = await crypto.subtle.exportKey('raw', key)
+    return toBase64(raw)
+}
+
+const importRawKey = async (base64Key: string) =>
+    crypto.subtle.importKey(
+        'raw',
+        fromBase64(base64Key),
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt'],
+    )
+
+export const wrapGroupKeyForMember = async (
+    groupKey: CryptoKey,
+    privateKey: CryptoKey,
+    memberUserId: string,
+) => {
+    const rawKeyBase64 = await exportRawKey(groupKey)
+    const sharedKey = await getSharedKey(privateKey, memberUserId)
+    const wrapped = await encryptMessage(rawKeyBase64, sharedKey)
+    return { wrappedKey: wrapped.cipherText, wrappedIv: wrapped.iv }
+}
+
+const unwrapGroupKey = async (
+    wrappedKey: string,
+    wrappedIv: string,
+    privateKey: CryptoKey,
+    wrappedByUserId: string,
+) => {
+    const sharedKey = await getSharedKey(privateKey, wrappedByUserId)
+    const rawKeyBase64 = await decryptMessage(wrappedKey, wrappedIv, sharedKey)
+    return importRawKey(rawKeyBase64)
+}
+
+export const getGroupKey = async (
+    groupChatId: string,
+    privateKey: CryptoKey,
+) => {
+    if (groupKeyCache.has(groupChatId)) {
+        return groupKeyCache.get(groupChatId) as CryptoKey
+    }
+
+    const response = await axios.get(`${API_URL}/group-chats/${groupChatId}/keys/me`)
+    const { wrappedKey, wrappedIv, wrappedByUserId } = response.data
+    const groupKey = await unwrapGroupKey(wrappedKey, wrappedIv, privateKey, String(wrappedByUserId))
+
+    groupKeyCache.set(groupChatId, groupKey)
+    return groupKey
+}
+
+export const cacheGroupKey = (groupChatId: string, groupKey: CryptoKey) => {
+    groupKeyCache.set(groupChatId, groupKey)
+}
+
 export const clearE2eeCache = () => {
     publicKeyCache.clear()
     sharedKeyCache.clear()
+    groupKeyCache.clear()
 }

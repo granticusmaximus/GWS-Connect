@@ -153,19 +153,15 @@ export default function MessageInput({
 
   const commandItems = useMemo(
     () => [
-      ...(groupChatId
-        ? []
-        : [
-          {
-            id: 'attach',
-            label: 'Attach File',
-            description: 'Upload a file',
-            icon: PaperClipIcon,
-            action: () => {
-              fileInputRef.current?.click()
-            },
-          },
-        ]),
+      {
+        id: 'attach',
+        label: 'Attach File',
+        description: 'Upload a file',
+        icon: PaperClipIcon,
+        action: () => {
+          fileInputRef.current?.click()
+        },
+      },
       {
         id: 'gif',
         label: 'GIF',
@@ -176,22 +172,18 @@ export default function MessageInput({
           setShowGifModal(true)
         },
       },
-      ...(groupChatId
-        ? []
-        : [
-          {
-            id: 'poll',
-            label: 'Create Poll',
-            description: 'Start a new poll',
-            icon: ChartBarIcon,
-            action: () => {
-              setPollInitialQuestion('')
-              setShowPollModal(true)
-            },
-          },
-        ]),
+      {
+        id: 'poll',
+        label: 'Create Poll',
+        description: 'Start a new poll',
+        icon: ChartBarIcon,
+        action: () => {
+          setPollInitialQuestion('')
+          setShowPollModal(true)
+        },
+      },
     ],
-    [groupChatId]
+    []
   )
 
   useEffect(() => {
@@ -480,22 +472,20 @@ export default function MessageInput({
 
           {showActions && (
             <div className="absolute bottom-12 left-0 w-48 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg py-2">
-              {!groupChatId && (
-                <label className="w-full px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="file"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0]
-                      if (file && onSelectFile) onSelectFile(file)
-                      setShowActions(false)
-                    }}
-                    aria-label="File upload"
-                  />
-                  <PaperClipIcon className="w-4 h-4" />
-                  Attach File
-                </label>
-              )}
+              <label className="w-full px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center gap-2 cursor-pointer">
+                <input
+                  type="file"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file && onSelectFile) onSelectFile(file)
+                    setShowActions(false)
+                  }}
+                  aria-label="File upload"
+                />
+                <PaperClipIcon className="w-4 h-4" />
+                Attach File
+              </label>
               <button
                 type="button"
                 onClick={() => {
@@ -508,20 +498,18 @@ export default function MessageInput({
                 <PhotoIcon className="w-4 h-4" />
                 GIF
               </button>
-              {!groupChatId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPollInitialQuestion('')
-                    setShowPollModal(true)
-                    setShowActions(false)
-                  }}
-                  className="w-full px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center gap-2"
-                >
-                  <ChartBarIcon className="w-4 h-4" />
-                  Create Poll
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setPollInitialQuestion('')
+                  setShowPollModal(true)
+                  setShowActions(false)
+                }}
+                className="w-full px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center gap-2"
+              >
+                <ChartBarIcon className="w-4 h-4" />
+                Create Poll
+              </button>
             </div>
           )}
         </div>
@@ -622,7 +610,7 @@ export default function MessageInput({
         onClose={() => setShowPollModal(false)}
         initialQuestion={pollInitialQuestion}
         onCreate={async ({ question, options, durationMinutes }) => {
-          const ok = await createPoll(question, options, channelId, recipientId, durationMinutes, replyTarget?.id)
+          const ok = await createPoll(question, options, channelId, recipientId, durationMinutes, replyTarget?.id, groupChatId)
           if (ok) {
             setShowPollModal(false)
             setPollInitialQuestion('')

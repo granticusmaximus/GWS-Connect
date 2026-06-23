@@ -893,6 +893,7 @@ io.on('connection', async (socket) => {
 			options,
 			channelId,
 			recipientId,
+			groupChatId,
 			durationMinutes,
 			replyToMessageId,
 		} = data || {};
@@ -929,10 +930,19 @@ io.on('connection', async (socket) => {
 				}
 			}
 
+			if (groupChatId) {
+				const access = resolveGroupChatAccess(groupChatId, socket.user.id);
+				if (!access.allowed) {
+					callback?.({ ok: false, message: access.reason });
+					return;
+				}
+			}
+
 			const replyState = resolveReplyState({
 				replyToMessageId,
 				channelId,
 				recipientId,
+				groupChatId,
 				currentUserId: socket.user.id,
 			});
 
@@ -962,6 +972,7 @@ io.on('connection', async (socket) => {
 				0,
 				replyState.replyToMessageId,
 				replyState.threadRootMessageId,
+				groupChatId || null,
 			);
 
 			const { createPoll, createPollOption, getPollSummary } =
@@ -983,6 +994,7 @@ io.on('connection', async (socket) => {
 				timestamp: new Date(),
 				channelId,
 				recipientId,
+				groupChatId,
 				poll: pollSummary,
 				reactions: [],
 				replyToMessageId: replyState.replyToMessageId,
@@ -990,7 +1002,9 @@ io.on('connection', async (socket) => {
 				replyContext: replyState.replyContext,
 			};
 
-			if (channelId) {
+			if (groupChatId) {
+				io.to(`group:${groupChatId}`).emit('message', message);
+			} else if (channelId) {
 				io.to(`channel:${channelId}`).emit('message', message);
 			} else if (recipientId) {
 				io.to(recipientId).emit('message', message);
@@ -1027,7 +1041,7 @@ io.on('connection', async (socket) => {
 					questionPreview: question ? question.substring(0, 100) : 'empty',
 					optionCount: options?.length || 0,
 					durationMinutes: Number(durationMinutes),
-					targetType: channelId ? 'channel' : 'direct-message',
+					targetType: channelId ? 'channel' : groupChatId ? 'group-chat' : 'direct-message',
 				},
 			});
 			callback?.({ ok: false, message: 'Failed to create poll' });
@@ -1062,6 +1076,12 @@ io.on('connection', async (socket) => {
 					callback?.({ ok: false, message: access.reason });
 					return;
 				}
+			} else if (messageContext?.groupChatId) {
+				const access = resolveGroupChatAccess(messageContext.groupChatId, socket.user.id);
+				if (!access.allowed) {
+					callback?.({ ok: false, message: access.reason });
+					return;
+				}
 			}
 
 			if (poll.expiresAt && Date.now() > new Date(poll.expiresAt).getTime()) {
@@ -1084,6 +1104,12 @@ io.on('connection', async (socket) => {
 
 			if (messageContext?.channelId) {
 				io.to(`channel:${messageContext.channelId}`).emit('poll-update', {
+					pollId: pollId.toString(),
+					options: pollSummary?.options || [],
+					expiresAt: poll.expiresAt,
+				});
+			} else if (messageContext?.groupChatId) {
+				io.to(`group:${messageContext.groupChatId}`).emit('poll-update', {
 					pollId: pollId.toString(),
 					options: pollSummary?.options || [],
 					expiresAt: poll.expiresAt,

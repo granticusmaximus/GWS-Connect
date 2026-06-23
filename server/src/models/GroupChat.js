@@ -134,6 +134,29 @@ export const removeGroupChatMember = (groupChatId, userId) => {
 		.run(groupChatId, userId);
 };
 
+export const upsertGroupChatKeys = (groupChatId, keys = []) => {
+	const stmt = db.prepare(`
+    INSERT INTO group_chat_keys (groupChatId, userId, wrappedKey, wrappedIv, wrappedByUserId)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(groupChatId, userId) DO UPDATE SET
+      wrappedKey = excluded.wrappedKey,
+      wrappedIv = excluded.wrappedIv,
+      wrappedByUserId = excluded.wrappedByUserId
+  `);
+
+	keys.forEach(({ userId, wrappedKey, wrappedIv, wrappedByUserId }) => {
+		stmt.run(groupChatId, userId, wrappedKey, wrappedIv, wrappedByUserId);
+	});
+};
+
+export const getGroupChatKeyForUser = (groupChatId, userId) => {
+	return db
+		.prepare(
+			'SELECT wrappedKey, wrappedIv, wrappedByUserId FROM group_chat_keys WHERE groupChatId = ? AND userId = ?',
+		)
+		.get(groupChatId, userId);
+};
+
 export const canAccessGroupChat = (groupChatId, userId) => {
 	const groupChat = findGroupChatById(groupChatId);
 	if (!groupChat) {
