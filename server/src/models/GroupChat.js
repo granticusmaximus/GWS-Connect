@@ -95,6 +95,13 @@ export const findGroupChatById = (id) => {
 	return db.prepare('SELECT * FROM group_chats WHERE id = ?').get(id);
 };
 
+export const setGroupChatDisappearingSeconds = (groupChatId, seconds) => {
+	db.prepare('UPDATE group_chats SET disappearingMessagesSeconds = ? WHERE id = ?').run(
+		Math.max(0, Number(seconds) || 0),
+		groupChatId,
+	);
+};
+
 export const getGroupChatMembers = (groupChatId) => {
 	return db
 		.prepare(

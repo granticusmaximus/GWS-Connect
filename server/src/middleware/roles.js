@@ -74,7 +74,7 @@ export const requireChannelManagerOrAdmin = (channelIdParam = 'channelId') => {
 	};
 };
 
-// Check if user can send messages in channel (not banned/muted)
+// Check if user can send messages in channel (not banned/muted/slow-moded)
 export const canSendMessage = (channelId, userId) => {
 	// Check if banned
 	const banStmt = db.prepare(
@@ -96,6 +96,55 @@ export const canSendMessage = (channelId, userId) => {
 		return {
 			allowed: false,
 			reason: `You are muted until ${new Date(mute.expiresAt).toLocaleString()}`,
+		};
+	}
+
+	const slowModeResult = checkSlowMode(channelId, userId);
+	if (!slowModeResult.allowed) {
+		return slowModeResult;
+	}
+
+	return { allowed: true };
+};
+
+const checkSlowMode = (channelId, userId) => {
+	const channel = db
+		.prepare('SELECT createdBy, slowModeSeconds FROM channels WHERE id = ?')
+		.get(channelId);
+
+	if (!channel || !channel.slowModeSeconds) {
+		return { allowed: true };
+	}
+
+	const role = getUserRole(userId);
+	const isExempt =
+		role === 'admin' ||
+		String(channel.createdBy) === String(userId) ||
+		isChannelManager(channelId, userId);
+
+	if (isExempt) {
+		return { allowed: true };
+	}
+
+	const lastMessage = db
+		.prepare(
+			`SELECT createdAt FROM messages
+		 WHERE channelId = ? AND senderId = ? AND isDeleted = 0
+		 ORDER BY datetime(createdAt) DESC LIMIT 1`,
+		)
+		.get(channelId, userId);
+
+	if (!lastMessage) {
+		return { allowed: true };
+	}
+
+	const elapsedMs = Date.now() - new Date(`${lastMessage.createdAt}Z`).getTime();
+	const remainingSeconds = channel.slowModeSeconds - Math.floor(elapsedMs / 1000);
+
+	if (remainingSeconds > 0) {
+		return {
+			allowed: false,
+			reason: `Slow mode is active. Wait ${remainingSeconds}s before sending again.`,
 		};
 	}
 

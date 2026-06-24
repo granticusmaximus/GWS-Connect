@@ -3,12 +3,15 @@ import { ExclamationTriangleIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import axios from 'axios';
 import { API_URL } from '../config/runtime';
 import { useAuthStore } from '../store/authStore';
+import { useChatStore } from '../store/chatStore';
 
 interface Channel {
 	id: number;
 	name: string;
 	description: string;
 	isPrivate?: boolean;
+	slowModeSeconds?: number;
+	disappearingMessagesSeconds?: number;
 }
 
 interface ChannelModalProps {
@@ -27,9 +30,12 @@ export default function ChannelModal({
 	mode,
 }: ChannelModalProps) {
 	const user = useAuthStore((state) => state.user);
+	const createChannel = useChatStore((state) => state.createChannel);
 	const [name, setName] = useState('');
 	const [description, setDescription] = useState('');
 	const [isPrivate, setIsPrivate] = useState(false);
+	const [slowModeSeconds, setSlowModeSeconds] = useState(0);
+	const [disappearingMessagesSeconds, setDisappearingMessagesSeconds] = useState(0);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState('');
 	const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -41,10 +47,14 @@ export default function ChannelModal({
 			setName(channel.name);
 			setDescription(channel.description);
 			setIsPrivate(!!channel.isPrivate);
+			setSlowModeSeconds(channel.slowModeSeconds || 0);
+			setDisappearingMessagesSeconds(channel.disappearingMessagesSeconds || 0);
 		} else {
 			setName('');
 			setDescription('');
 			setIsPrivate(false);
+			setSlowModeSeconds(0);
+			setDisappearingMessagesSeconds(0);
 		}
 		setError('');
 		setShowDeleteConfirm(false);
@@ -68,17 +78,18 @@ export default function ChannelModal({
 				// Update existing channel
 				await axios.put(
 					`${API_URL}/manager/${channel.id}`,
-					{ name, description, isPrivate },
+					{ name, description, isPrivate, slowModeSeconds, disappearingMessagesSeconds },
 				);
 				onSuccess();
 				onClose();
 			} else {
 				// Create new channel
-				await axios.post(`${API_URL}/channels`, {
-					name,
-					description,
-					isPrivate,
-				});
+				const result = await createChannel(name, description, isPrivate);
+				if (!result.ok) {
+					setError(result.message || 'Failed to create channel');
+					setLoading(false);
+					return;
+				}
 
 				// Show success message based on user role
 				if (user?.role === 'admin') {
@@ -232,6 +243,56 @@ export default function ChannelModal({
 								Private channels are visible to admins and approved members only.
 							</p>
 						</div>
+
+						{mode === 'edit' && (
+							<div>
+								<label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+									Slow Mode
+								</label>
+								<select
+									aria-label="Slow Mode"
+									value={slowModeSeconds}
+									onChange={(e) => setSlowModeSeconds(Number(e.target.value))}
+									className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+									disabled={loading || deleting}
+								>
+									<option value={0}>Off</option>
+									<option value={5}>5 seconds</option>
+									<option value={10}>10 seconds</option>
+									<option value={30}>30 seconds</option>
+									<option value={60}>1 minute</option>
+									<option value={300}>5 minutes</option>
+									<option value={900}>15 minutes</option>
+									<option value={3600}>1 hour</option>
+								</select>
+								<p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+									Members must wait between messages. Managers and admins are exempt.
+								</p>
+							</div>
+						)}
+
+						{mode === 'edit' && (
+							<div>
+								<label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+									Disappearing Messages
+								</label>
+								<select
+									aria-label="Disappearing Messages"
+									value={disappearingMessagesSeconds}
+									onChange={(e) => setDisappearingMessagesSeconds(Number(e.target.value))}
+									className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+									disabled={loading || deleting}
+								>
+									<option value={0}>Off</option>
+									<option value={3600}>1 hour</option>
+									<option value={86400}>1 day</option>
+									<option value={604800}>7 days</option>
+								</select>
+								<p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+									New messages in this channel will automatically delete after this duration.
+								</p>
+							</div>
+						)}
 
 						{mode === 'create' && user?.role !== 'admin' && (
 							<div className="bg-yellow-100 dark:bg-yellow-900/30 border border-yellow-400 dark:border-yellow-700 text-yellow-800 dark:text-yellow-400 px-4 py-3 rounded text-sm inline-flex items-start gap-2">

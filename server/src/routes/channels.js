@@ -7,8 +7,11 @@ import {
 	addChannelMember,
 	canAccessChannel,
 	findVisibleChannelsForUser,
+	getChannelKeyForUser,
 	getChannelRoster,
+	isChannelMember,
 	markChannelVisited,
+	upsertChannelKeys,
 } from '../models/Channel.js';
 
 const router = express.Router();
@@ -27,7 +30,7 @@ router.get('/', authenticateToken, async (req, res) => {
 // Create channel
 router.post('/', authenticateToken, async (req, res) => {
 	try {
-		const { name, description, isPrivate } = req.body;
+		const { name, description, isPrivate, wrappedKey, wrappedIv } = req.body;
 		const userRole = getUserRole(req.user.id);
 		const privacyValue = isPrivate ? 1 : 0;
 
@@ -44,6 +47,15 @@ router.post('/', authenticateToken, async (req, res) => {
 		);
 		const channel = findChannelById(channelId);
 		channel.status = status;
+
+		// Private channels are E2EE: the creator wraps the channel key for
+		// themselves immediately; later members receive it from an online
+		// member when they join (see 'channel-key-needed').
+		if (privacyValue && wrappedKey && wrappedIv) {
+			upsertChannelKeys(channelId, [
+				{ userId: req.user.id, wrappedKey: String(wrappedKey), wrappedIv: String(wrappedIv), wrappedByUserId: req.user.id },
+			]);
+		}
 
 		const message =
 			status === 'approved'
@@ -78,7 +90,67 @@ router.post('/:channelId/join', authenticateToken, async (req, res) => {
 
 		addChannelMember(req.params.channelId, req.user.id);
 
+		if (access.channel.isPrivate) {
+			const io = req.app.get('io');
+			io.to(`channel:${req.params.channelId}`).emit('channel-key-needed', {
+				channelId: String(req.params.channelId),
+				userId: String(req.user.id),
+			});
+		}
+
 		res.json(access.channel);
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.get('/:channelId/keys/me', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessChannel(req.params.channelId, req.user.id, getUserRole(req.user.id));
+		if (!access.channel) {
+			return res.status(404).json({ message: 'Channel not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const key = getChannelKeyForUser(req.params.channelId, req.user.id);
+		if (!key) {
+			return res.status(404).json({ message: 'Encryption key not yet available' });
+		}
+
+		res.json(key);
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+// Grant key access to a fellow member who joined without one
+router.post('/:channelId/keys', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessChannel(req.params.channelId, req.user.id, getUserRole(req.user.id));
+		if (!access.channel) {
+			return res.status(404).json({ message: 'Channel not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const { userId, wrappedKey, wrappedIv } = req.body;
+		const targetUserId = Number(userId);
+		if (!Number.isInteger(targetUserId) || !wrappedKey || !wrappedIv) {
+			return res.status(400).json({ message: 'userId, wrappedKey, and wrappedIv are required' });
+		}
+
+		if (!isChannelMember(req.params.channelId, targetUserId)) {
+			return res.status(400).json({ message: 'Target user is not a member of this channel' });
+		}
+
+		upsertChannelKeys(req.params.channelId, [
+			{ userId: targetUserId, wrappedKey: String(wrappedKey), wrappedIv: String(wrappedIv), wrappedByUserId: req.user.id },
+		]);
+
+		res.json({ ok: true });
 	} catch (error) {
 		res.status(500).json({ message: 'Server error' });
 	}

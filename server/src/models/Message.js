@@ -60,10 +60,11 @@ export const createMessage = (
 	replyToMessageId = null,
 	threadRootMessageId = null,
 	groupChatId = null,
+	expiresAt = null,
 ) => {
 	const stmt = db.prepare(`
-    INSERT INTO messages (content, senderId, channelId, recipientId, groupChatId, replyToMessageId, threadRootMessageId, fileUrl, fileName, fileType, filePath, cipherText, cipherIv, isEncrypted)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (content, senderId, channelId, recipientId, groupChatId, replyToMessageId, threadRootMessageId, fileUrl, fileName, fileType, filePath, cipherText, cipherIv, isEncrypted, expiresAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 	const result = stmt.run(
 		content,
@@ -80,6 +81,7 @@ export const createMessage = (
 		cipherText,
 		cipherIv,
 		isEncrypted,
+		expiresAt,
 	);
 	return result.lastInsertRowid;
 };
@@ -237,6 +239,110 @@ export const markDirectConversationVisited = (userId, peerUserId) => {
         lastVisitedAt = CURRENT_TIMESTAMP
     `,
 	).run(userId, peerUserId);
+};
+
+export const getDirectMessageVisit = (userId, peerUserId) => {
+	return db
+		.prepare(
+			'SELECT lastVisitedAt FROM direct_message_visits WHERE userId = ? AND peerUserId = ?',
+		)
+		.get(userId, peerUserId);
+};
+
+export const getGroupChatVisits = (groupChatId, excludeUserId) => {
+	return db
+		.prepare(
+			'SELECT userId, lastVisitedAt FROM group_chat_visits WHERE groupChatId = ? AND userId != ?',
+		)
+		.all(groupChatId, excludeUserId);
+};
+
+const canonicalDmPair = (userId1, userId2) => {
+	const a = Number(userId1);
+	const b = Number(userId2);
+	return a < b ? [a, b] : [b, a];
+};
+
+export const getDirectMessageSettings = (userId1, userId2) => {
+	const [a, b] = canonicalDmPair(userId1, userId2);
+	return db
+		.prepare(
+			'SELECT disappearingMessagesSeconds FROM direct_message_settings WHERE userId1 = ? AND userId2 = ?',
+		)
+		.get(a, b);
+};
+
+export const setDirectMessageSettings = (userId1, userId2, disappearingMessagesSeconds) => {
+	const [a, b] = canonicalDmPair(userId1, userId2);
+	db.prepare(
+		`INSERT INTO direct_message_settings (userId1, userId2, disappearingMessagesSeconds, updatedAt)
+     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(userId1, userId2) DO UPDATE SET
+       disappearingMessagesSeconds = excluded.disappearingMessagesSeconds,
+       updatedAt = CURRENT_TIMESTAMP`,
+	).run(a, b, disappearingMessagesSeconds);
+};
+
+export const getConversationTtlSeconds = ({ channelId, recipientId, groupChatId, currentUserId }) => {
+	if (channelId) {
+		const channel = db
+			.prepare('SELECT disappearingMessagesSeconds FROM channels WHERE id = ?')
+			.get(channelId);
+		return channel?.disappearingMessagesSeconds || 0;
+	}
+
+	if (groupChatId) {
+		const groupChat = db
+			.prepare('SELECT disappearingMessagesSeconds FROM group_chats WHERE id = ?')
+			.get(groupChatId);
+		return groupChat?.disappearingMessagesSeconds || 0;
+	}
+
+	if (recipientId) {
+		const settings = getDirectMessageSettings(currentUserId, recipientId);
+		return settings?.disappearingMessagesSeconds || 0;
+	}
+
+	return 0;
+};
+
+export const computeExpiresAt = (ttlSeconds) => {
+	if (!ttlSeconds || ttlSeconds <= 0) {
+		return null;
+	}
+	return new Date(Date.now() + ttlSeconds * 1000).toISOString();
+};
+
+export const getExpiredMessages = () => {
+	return db
+		.prepare(
+			`SELECT id, channelId, recipientId, groupChatId, senderId
+       FROM messages
+       WHERE expiresAt IS NOT NULL
+         AND datetime(expiresAt) <= datetime('now')
+         AND isDeleted = 0`,
+		)
+		.all();
+};
+
+export const expireMessages = (messageIds) => {
+	if (messageIds.length === 0) {
+		return;
+	}
+	const placeholders = messageIds.map(() => '?').join(', ');
+	db.prepare(
+		`UPDATE messages
+     SET content = '',
+         fileUrl = NULL,
+         fileName = NULL,
+         fileType = NULL,
+         filePath = NULL,
+         cipherText = NULL,
+         cipherIv = NULL,
+         isDeleted = 1,
+         deletedAt = CURRENT_TIMESTAMP
+     WHERE id IN (${placeholders})`,
+	).run(...messageIds);
 };
 
 export const getMessageById = (messageId) => {
@@ -428,55 +534,69 @@ export const togglePinMessage = (messageId, userId) => {
 	return { isPinned: nextPinned, pinnedAt: nextPinned ? new Date().toISOString() : null };
 };
 
+const buildFtsMatchQuery = (query) => {
+	const tokens = query
+		.split(/\s+/)
+		.filter(Boolean)
+		.map((word) => `"${word.replace(/"/g, '""')}"*`);
+	return tokens.join(' ');
+};
+
 export const searchMessages = (
 	query,
 	{ channelId = null, recipientId = null, groupChatId = null, currentUserId },
 ) => {
-	const likeTerm = `%${query.replace(/[%_]/g, '\\$&')}%`;
+	const matchQuery = buildFtsMatchQuery(query);
+	if (!matchQuery) {
+		return [];
+	}
 
 	if (channelId) {
 		return db
 			.prepare(
 				`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
-		 FROM messages m
+		 FROM messages_fts f
+		 JOIN messages m ON m.id = f.rowid
 		 JOIN users u ON m.senderId = u.id
-		 WHERE m.channelId = ?
+		 WHERE f.content MATCH ?
+		   AND m.channelId = ?
 		   AND m.isDeleted = 0 AND m.isEncrypted = 0
-		   AND m.content LIKE ? ESCAPE '\\'
-		 ORDER BY datetime(m.createdAt) DESC
+		 ORDER BY f.rank
 		 LIMIT 50`,
 			)
-			.all(channelId, likeTerm);
+			.all(matchQuery, channelId);
 	}
 
 	if (groupChatId) {
 		return db
 			.prepare(
 				`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
-		 FROM messages m
+		 FROM messages_fts f
+		 JOIN messages m ON m.id = f.rowid
 		 JOIN users u ON m.senderId = u.id
-		 WHERE m.groupChatId = ?
+		 WHERE f.content MATCH ?
+		   AND m.groupChatId = ?
 		   AND m.isDeleted = 0 AND m.isEncrypted = 0
-		   AND m.content LIKE ? ESCAPE '\\'
-		 ORDER BY datetime(m.createdAt) DESC
+		 ORDER BY f.rank
 		 LIMIT 50`,
 			)
-			.all(groupChatId, likeTerm);
+			.all(matchQuery, groupChatId);
 	}
 
 	return db
 		.prepare(
 			`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
-	 FROM messages m
+	 FROM messages_fts f
+	 JOIN messages m ON m.id = f.rowid
 	 JOIN users u ON m.senderId = u.id
-	 WHERE m.recipientId IS NOT NULL
+	 WHERE f.content MATCH ?
+	   AND m.recipientId IS NOT NULL
 	   AND m.isDeleted = 0 AND m.isEncrypted = 0
 	   AND ((m.senderId = ? AND m.recipientId = ?) OR (m.senderId = ? AND m.recipientId = ?))
-	   AND m.content LIKE ? ESCAPE '\\'
-	 ORDER BY datetime(m.createdAt) DESC
+	 ORDER BY f.rank
 	 LIMIT 50`,
 		)
-		.all(currentUserId, recipientId, recipientId, currentUserId, likeTerm);
+		.all(matchQuery, currentUserId, recipientId, recipientId, currentUserId);
 };
 
 export const getPinnedMessages = (channelId, recipientId, currentUserId, groupChatId = null) => {

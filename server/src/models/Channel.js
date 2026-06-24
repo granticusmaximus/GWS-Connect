@@ -128,6 +128,29 @@ export const addChannelMember = (channelId, userId) => {
 	return stmt.run(channelId, userId);
 };
 
+export const upsertChannelKeys = (channelId, keys = []) => {
+	const stmt = db.prepare(`
+    INSERT INTO channel_keys (channelId, userId, wrappedKey, wrappedIv, wrappedByUserId)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(channelId, userId) DO UPDATE SET
+      wrappedKey = excluded.wrappedKey,
+      wrappedIv = excluded.wrappedIv,
+      wrappedByUserId = excluded.wrappedByUserId
+  `);
+
+	keys.forEach(({ userId, wrappedKey, wrappedIv, wrappedByUserId }) => {
+		stmt.run(channelId, userId, wrappedKey, wrappedIv, wrappedByUserId);
+	});
+};
+
+export const getChannelKeyForUser = (channelId, userId) => {
+	return db
+		.prepare(
+			'SELECT wrappedKey, wrappedIv, wrappedByUserId FROM channel_keys WHERE channelId = ? AND userId = ?',
+		)
+		.get(channelId, userId);
+};
+
 export const getChannelMembers = (channelId) => {
 	const stmt = db.prepare(`
     SELECT u.id, u.username, u.avatar

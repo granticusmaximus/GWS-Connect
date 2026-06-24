@@ -8,10 +8,13 @@ import {
 	findGroupChatsForUser,
 	getGroupChatKeyForUser,
 	getGroupChatMembers,
+	isGroupChatMember,
 	markGroupChatVisited,
 	removeGroupChatMember,
+	setGroupChatDisappearingSeconds,
 	upsertGroupChatKeys,
 } from '../models/GroupChat.js';
+import { getGroupChatVisits } from '../models/Message.js';
 
 const router = express.Router();
 
@@ -103,6 +106,34 @@ router.get('/:groupChatId', authenticateToken, async (req, res) => {
 	}
 });
 
+// Update group chat settings (currently just disappearing messages)
+router.put('/:groupChatId/settings', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
+		if (!access.groupChat) {
+			return res.status(404).json({ message: 'Group chat not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const { disappearingMessagesSeconds } = req.body;
+		if (disappearingMessagesSeconds !== undefined) {
+			setGroupChatDisappearingSeconds(req.params.groupChatId, disappearingMessagesSeconds);
+		}
+
+		const io = req.app.get('io');
+		io.to(`group:${req.params.groupChatId}`).emit('group-settings-updated', {
+			groupChatId: String(req.params.groupChatId),
+			disappearingMessagesSeconds: Math.max(0, Number(disappearingMessagesSeconds) || 0),
+		});
+
+		res.json(findGroupChatById(req.params.groupChatId));
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
 router.get('/:groupChatId/keys/me', authenticateToken, async (req, res) => {
 	try {
 		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
@@ -124,6 +155,39 @@ router.get('/:groupChatId/keys/me', authenticateToken, async (req, res) => {
 	}
 });
 
+// Grant key access to a fellow member who joined without one (e.g. via invite
+// link redemption). Any existing member who already holds the group key may
+// wrap and upload it for the target member.
+router.post('/:groupChatId/keys', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
+		if (!access.groupChat) {
+			return res.status(404).json({ message: 'Group chat not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const { userId, wrappedKey, wrappedIv } = req.body;
+		const targetUserId = Number(userId);
+		if (!Number.isInteger(targetUserId) || !wrappedKey || !wrappedIv) {
+			return res.status(400).json({ message: 'userId, wrappedKey, and wrappedIv are required' });
+		}
+
+		if (!isGroupChatMember(req.params.groupChatId, targetUserId)) {
+			return res.status(400).json({ message: 'Target user is not a member of this group chat' });
+		}
+
+		upsertGroupChatKeys(req.params.groupChatId, [
+			{ userId: targetUserId, wrappedKey: String(wrappedKey), wrappedIv: String(wrappedIv), wrappedByUserId: req.user.id },
+		]);
+
+		res.json({ ok: true });
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
 router.post('/:groupChatId/visit', authenticateToken, async (req, res) => {
 	try {
 		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
@@ -134,8 +198,39 @@ router.post('/:groupChatId/visit', authenticateToken, async (req, res) => {
 			return res.status(403).json({ message: access.reason });
 		}
 
+		const visitedAt = new Date().toISOString();
 		markGroupChatVisited(req.user.id, req.params.groupChatId);
+
+		const io = req.app.get('io');
+		io.to(`group:${req.params.groupChatId}`).emit('group-read', {
+			readerId: String(req.user.id),
+			groupChatId: String(req.params.groupChatId),
+			lastVisitedAt: visitedAt,
+		});
+
 		res.json({ ok: true });
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.get('/:groupChatId/read-state', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
+		if (!access.groupChat) {
+			return res.status(404).json({ message: 'Group chat not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const visits = getGroupChatVisits(req.params.groupChatId, req.user.id);
+		res.json(
+			visits.reduce((acc, visit) => {
+				acc[String(visit.userId)] = visit.lastVisitedAt;
+				return acc;
+			}, {}),
+		);
 	} catch (error) {
 		res.status(500).json({ message: 'Server error' });
 	}

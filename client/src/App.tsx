@@ -11,6 +11,7 @@ import Dashboard from './pages/Dashboard'
 import Profile from './pages/Profile'
 import Friends from './pages/Friends'
 import AdminPanel from './pages/AdminPanel'
+import InvitePage from './pages/InvitePage'
 import ToastContainer from './components/ToastContainer'
 import IncomingCallModal from './components/IncomingCallModal'
 import CallBar from './components/CallBar'
@@ -110,6 +111,10 @@ function App() {
                 : <AdminPanel />
               : <Navigate to="/dashboard" />
           }
+        />
+        <Route
+          path="/invite/:code"
+          element={user ? <InvitePage /> : <Navigate to="/login" />}
         />
         <Route path="/" element={<Navigate to={user ? "/dashboard" : "/login"} />} />
       </Routes>

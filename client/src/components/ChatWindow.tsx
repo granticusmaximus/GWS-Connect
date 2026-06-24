@@ -12,10 +12,12 @@ import { getReplyPreviewText, getThreadKey } from '../utils/replies'
 import { useAuthStore } from '../store/authStore'
 import MessageInput from './MessageInput'
 import ChannelModal from './ChannelModal'
+import InviteModal from './InviteModal'
 import PollCard from './PollCard'
 import ChatFilesPanel from './ChatFilesPanel'
 import DocumentPreview from './DocumentPreview'
 import { 
+  ClockIcon,
   ExclamationTriangleIcon,
   FaceFrownIcon,
   FaceSmileIcon,
@@ -207,6 +209,11 @@ export default function ChatWindow() {
     messages,
     activeDM,
     activeGroupChat,
+    readReceiptsByChatId,
+    dmDisappearingSecondsByPeerId,
+    loadDmDisappearingSeconds,
+    setDmDisappearing,
+    setGroupChatDisappearing,
     messageFocusTarget,
     latestMessageRequest,
     clearMessageFocusTarget,
@@ -236,6 +243,8 @@ export default function ChatWindow() {
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [showEditModal, setShowEditModal] = useState(false)
+  const [showInviteModal, setShowInviteModal] = useState(false)
+  const [showDisappearingMenu, setShowDisappearingMenu] = useState(false)
   const [activeTab, setActiveTab] = useState<'messages' | 'files' | 'members' | 'pinned'>('messages')
   const [pinnedMessages, setPinnedMessages] = useState<ChatMessage[]>([])
   const [pendingFile, setPendingFile] = useState<File | null>(null)
@@ -298,6 +307,48 @@ export default function ChatWindow() {
     () => groupChats.find((group) => group.id === activeGroupChat) || null,
     [activeGroupChat, groupChats],
   )
+
+  const seenIndicatorText = useMemo(() => {
+    if (currentChatType !== 'dm' && currentChatType !== 'group') {
+      return null
+    }
+    if (!currentChatId || !user) {
+      return null
+    }
+
+    const lastOwnMessage = [...currentMessages]
+      .reverse()
+      .find((message) => message.senderId === String(user.id) && !message.isDeleted)
+    if (!lastOwnMessage) {
+      return null
+    }
+
+    const receipts = readReceiptsByChatId[currentChatId] || {}
+    const lastOwnTimestamp = new Date(lastOwnMessage.timestamp).getTime()
+
+    if (currentChatType === 'dm') {
+      const peerLastVisited = receipts[currentChatId]
+      if (peerLastVisited && new Date(peerLastVisited).getTime() >= lastOwnTimestamp) {
+        return 'Seen'
+      }
+      return null
+    }
+
+    const seenByMembers = (currentGroupChat?.members || [])
+      .filter((member) => member.id !== String(user.id))
+      .filter((member) => {
+        const lastVisited = receipts[member.id]
+        return lastVisited && new Date(lastVisited).getTime() >= lastOwnTimestamp
+      })
+
+    if (seenByMembers.length === 0) {
+      return null
+    }
+    if (seenByMembers.length <= 2) {
+      return `Seen by ${seenByMembers.map((member) => member.username).join(', ')}`
+    }
+    return `Seen by ${seenByMembers.length} members`
+  }, [currentChatType, currentChatId, currentMessages, user, readReceiptsByChatId, currentGroupChat])
 
   const reactionOptions = useMemo(() => [
     { type: 'like', icon: HandThumbUpIcon, label: 'Like' },
@@ -364,8 +415,9 @@ export default function ChatWindow() {
   useEffect(() => {
     if (activeDM) {
       loadDirectMessages(activeDM)
+      void loadDmDisappearingSeconds(activeDM)
     }
-  }, [activeDM, loadDirectMessages])
+  }, [activeDM, loadDirectMessages, loadDmDisappearingSeconds])
 
   useEffect(() => {
     if (activeGroupChat) {
@@ -1277,6 +1329,11 @@ export default function ChatWindow() {
             )
           })
         )}
+        {seenIndicatorText && (
+          <div className="px-4 pb-1 text-right text-xs text-gray-500 dark:text-gray-400">
+            {seenIndicatorText}
+          </div>
+        )}
         <div ref={messagesEndRef} />
       </div>
     )
@@ -1660,6 +1717,60 @@ export default function ChatWindow() {
 
           {!activeCallId && currentChatType && currentChatId && (
             <div className="flex flex-shrink-0 items-center gap-2">
+              {(currentChannel || currentGroupChat) && (
+                <button
+                  type="button"
+                  onClick={() => setShowInviteModal(true)}
+                  className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700"
+                  title="Invite people"
+                >
+                  <UserPlusIcon className="w-4 h-4" />
+                  <span className="hidden sm:inline">Invite</span>
+                </button>
+              )}
+              {(currentGroupChat || (activeDM && currentDirectConversation)) && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowDisappearingMenu((current) => !current)}
+                    className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700"
+                    title="Disappearing messages"
+                  >
+                    <ClockIcon className="w-4 h-4" />
+                    <span className="hidden sm:inline">
+                      {(currentGroupChat?.disappearingMessagesSeconds || (activeDM ? dmDisappearingSecondsByPeerId[activeDM] : 0))
+                        ? 'Disappearing: On'
+                        : 'Disappearing'}
+                    </span>
+                  </button>
+                  {showDisappearingMenu && (
+                    <div className="absolute right-0 top-full z-30 mt-2 w-56 rounded-lg border border-gray-200 bg-white p-2 shadow-lg dark:border-gray-700 dark:bg-gray-800">
+                      {[
+                        { label: 'Off', seconds: 0 },
+                        { label: '1 hour', seconds: 3600 },
+                        { label: '1 day', seconds: 86400 },
+                        { label: '7 days', seconds: 604800 },
+                      ].map((option) => (
+                        <button
+                          key={option.seconds}
+                          type="button"
+                          onClick={() => {
+                            setShowDisappearingMenu(false)
+                            if (currentGroupChat) {
+                              void setGroupChatDisappearing(currentGroupChat.id, option.seconds)
+                            } else if (activeDM) {
+                              void setDmDisappearing(activeDM, option.seconds)
+                            }
+                          }}
+                          className="w-full rounded-md px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => void startCall(currentChatType, currentChatId, false)}
@@ -1863,8 +1974,21 @@ export default function ChatWindow() {
             name: currentChannel.name,
             description: currentChannel.description,
             isPrivate: !!currentChannel.isPrivate,
+            slowModeSeconds: currentChannel.slowModeSeconds,
+            disappearingMessagesSeconds: currentChannel.disappearingMessagesSeconds,
           }}
           mode="edit"
+        />
+      )}
+
+      {/* Invite Modal */}
+      {(currentChannel || currentGroupChat) && (
+        <InviteModal
+          isOpen={showInviteModal}
+          onClose={() => setShowInviteModal(false)}
+          targetType={currentChannel ? 'channel' : 'group'}
+          targetId={currentChannel ? currentChannel.id : currentGroupChat!.id}
+          targetName={currentChannel?.name || currentGroupChat?.name || ''}
         />
       )}
     </div>

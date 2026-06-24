@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { io, Socket } from 'socket.io-client'
 import axios from 'axios'
 import { API_URL, SOCKET_URL } from '../config/runtime'
-import { getSharedKey, decryptMessage, encryptMessage, generateGroupKey, getGroupKey, wrapGroupKeyForMember, cacheGroupKey } from '../utils/e2ee'
+import { getSharedKey, decryptMessage, encryptMessage, generateGroupKey, getGroupKey, wrapGroupKeyForMember, cacheGroupKey, getChannelKey, cacheChannelKey } from '../utils/e2ee'
 import type { MessageMention } from '../utils/mentions'
 import { useAuthStore } from './authStore'
 import { useNotificationStore, type InAppNotification } from './notificationStore'
@@ -75,6 +75,7 @@ export interface Message {
     reactions?: ReactionSummary[]
     isPinned?: boolean
     pinnedAt?: string | null
+    expiresAt?: string | null
 }
 
 interface ReactionSummary {
@@ -110,6 +111,8 @@ export interface Channel {
     status?: string
     unreadCount: number
     lastMessageAt: string | null
+    slowModeSeconds?: number
+    disappearingMessagesSeconds?: number
 }
 
 export interface DirectMessage {
@@ -133,12 +136,29 @@ export interface GroupChat {
     members: GroupChatMember[]
     lastMessageAt: string | null
     unreadCount: number
+    disappearingMessagesSeconds?: number
 }
 
 export interface TypingUser {
     userId: string
     username: string
     avatar?: string | null
+}
+
+export interface InviteLink {
+    id: string
+    code: string
+    targetType: 'channel' | 'group'
+    targetId: string
+    maxUses: number | null
+    useCount: number
+    expiresAt: string | null
+}
+
+export interface InvitePreview {
+    targetType: 'channel' | 'group'
+    targetId: string
+    name: string
 }
 
 interface SharedFileItem {
@@ -165,6 +185,8 @@ interface ChatState {
     latestMessageRequest: LatestMessageRequest | null
     onlineUsers: string[]
     presenceByUserId: { [userId: string]: 'online' | 'idle' }
+    readReceiptsByChatId: { [chatId: string]: { [userId: string]: string } }
+    dmDisappearingSecondsByPeerId: { [peerId: string]: number }
     typingUsersByChatId: { [key: string]: TypingUser[] }
     initSocket: (token: string) => void
     disconnectSocket: () => void
@@ -190,12 +212,21 @@ interface ChatState {
     createGroupChat: (name: string, memberIds: string[]) => Promise<GroupChat | null>
     loadGroupChatMessages: (groupChatId: string) => Promise<void>
     leaveGroupChat: (groupChatId: string) => Promise<boolean>
+    createInviteLink: (targetType: 'channel' | 'group', targetId: string, options?: { maxUses?: number; expiresInHours?: number }) => Promise<InviteLink | null>
+    listInviteLinks: (targetType: 'channel' | 'group', targetId: string) => Promise<InviteLink[]>
+    revokeInviteLink: (inviteId: string) => Promise<boolean>
+    previewInvite: (code: string) => Promise<InvitePreview | null>
+    redeemInvite: (code: string) => Promise<InvitePreview | null>
+    setGroupChatDisappearing: (groupChatId: string, seconds: number) => Promise<boolean>
+    loadDmDisappearingSeconds: (peerId: string) => Promise<void>
+    setDmDisappearing: (peerId: string, seconds: number) => Promise<boolean>
     setMessageFocusTarget: (target: MessageFocusTarget | null) => void
     clearMessageFocusTarget: () => void
     requestLatestMessageView: (chatType: 'channel' | 'dm' | 'group', chatId: string) => void
     clearLatestMessageRequest: () => void
     restoreActiveChat: (userId: string) => void
     loadChannels: () => Promise<void>
+    createChannel: (name: string, description: string, isPrivate: boolean) => Promise<{ ok: boolean; message?: string }>
     loadDirectConversations: () => Promise<void>
     loadChannelMessages: (channelId: string) => Promise<void>
     loadDirectMessages: (userId: string) => Promise<void>
@@ -220,6 +251,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     latestMessageRequest: null,
     onlineUsers: [],
     presenceByUserId: {},
+    readReceiptsByChatId: {},
+    dmDisappearingSecondsByPeerId: {},
     typingUsersByChatId: {},
 
     initSocket: (token: string) => {
@@ -276,6 +309,63 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 groupChats: state.groupChats.some((group) => group.id === groupChat.id)
                     ? state.groupChats
                     : [groupChat, ...state.groupChats],
+            }))
+        })
+
+        socket.on('group-chat-key-needed', async (payload: { groupChatId: string; userId: string }) => {
+            const { e2eePrivateKey, user: currentUser } = useAuthStore.getState()
+            if (!e2eePrivateKey || !currentUser || String(currentUser.id) === payload.userId) {
+                return
+            }
+
+            try {
+                const groupKey = await getGroupKey(payload.groupChatId, e2eePrivateKey)
+                const { wrappedKey, wrappedIv } = await wrapGroupKeyForMember(groupKey, e2eePrivateKey, payload.userId)
+                await axios.post(`${API_URL}/group-chats/${payload.groupChatId}/keys`, {
+                    userId: payload.userId,
+                    wrappedKey,
+                    wrappedIv,
+                })
+            } catch (error) {
+                console.error('Failed to grant group key to new member:', error)
+            }
+        })
+
+        socket.on('channel-key-needed', async (payload: { channelId: string; userId: string }) => {
+            const { e2eePrivateKey, user: currentUser } = useAuthStore.getState()
+            if (!e2eePrivateKey || !currentUser || String(currentUser.id) === payload.userId) {
+                return
+            }
+
+            try {
+                const channelKey = await getChannelKey(payload.channelId, e2eePrivateKey)
+                const { wrappedKey, wrappedIv } = await wrapGroupKeyForMember(channelKey, e2eePrivateKey, payload.userId)
+                await axios.post(`${API_URL}/channels/${payload.channelId}/keys`, {
+                    userId: payload.userId,
+                    wrappedKey,
+                    wrappedIv,
+                })
+            } catch (error) {
+                console.error('Failed to grant channel key to new member:', error)
+            }
+        })
+
+        socket.on('group-settings-updated', (payload: { groupChatId: string; disappearingMessagesSeconds: number }) => {
+            set((state) => ({
+                groupChats: state.groupChats.map((group) =>
+                    group.id === payload.groupChatId
+                        ? { ...group, disappearingMessagesSeconds: payload.disappearingMessagesSeconds }
+                        : group,
+                ),
+            }))
+        })
+
+        socket.on('dm-settings-updated', (payload: { peerId: string; disappearingMessagesSeconds: number }) => {
+            set((state) => ({
+                dmDisappearingSecondsByPeerId: {
+                    ...state.dmDisappearingSecondsByPeerId,
+                    [payload.peerId]: payload.disappearingMessagesSeconds,
+                },
             }))
         })
 
@@ -544,6 +634,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
             set({ presenceByUserId: presence })
         })
 
+        socket.on('dm-read', (payload: { readerId: string; peerId: string; lastVisitedAt: string }) => {
+            set((state) => ({
+                readReceiptsByChatId: {
+                    ...state.readReceiptsByChatId,
+                    [payload.readerId]: {
+                        ...state.readReceiptsByChatId[payload.readerId],
+                        [payload.readerId]: payload.lastVisitedAt,
+                    },
+                },
+            }))
+        })
+
+        socket.on('group-read', (payload: { readerId: string; groupChatId: string; lastVisitedAt: string }) => {
+            set((state) => ({
+                readReceiptsByChatId: {
+                    ...state.readReceiptsByChatId,
+                    [payload.groupChatId]: {
+                        ...state.readReceiptsByChatId[payload.groupChatId],
+                        [payload.readerId]: payload.lastVisitedAt,
+                    },
+                },
+            }))
+        })
+
         socket.on('typing-start', (payload: { chatId?: string; userId: string; username: string; avatar?: string | null }) => {
             const normalizedChatId = normalizeOptionalId(payload.chatId)
             if (!normalizedChatId) {
@@ -700,7 +814,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 replyToMessageId,
             }
 
-            if (recipientId) {
+            const isPrivateChannel = channelId
+                ? !!get().channels.find((channel) => channel.id === String(channelId))?.isPrivate
+                : false
+
+            if (channelId && isPrivateChannel) {
+                const { e2eePrivateKey, user } = useAuthStore.getState()
+
+                if (!e2eePrivateKey || !user) {
+                    useNotificationStore.getState().addToast({
+                        id: `e2ee-error-${Date.now()}`,
+                        title: 'Message not sent',
+                        body: 'End-to-end encryption is not ready yet. Please try again in a moment.',
+                    })
+                    return false
+                }
+
+                try {
+                    const channelKey = await getChannelKey(String(channelId), e2eePrivateKey)
+                    const encrypted = await encryptMessage(content, channelKey)
+
+                    payload = {
+                        content: '',
+                        channelId,
+                        replyToMessageId,
+                        cipherText: encrypted.cipherText,
+                        cipherIv: encrypted.iv,
+                        isEncrypted: true,
+                    }
+                } catch (error) {
+                    console.error('Channel encryption failed:', error)
+                    useNotificationStore.getState().addToast({
+                        id: `e2ee-error-${Date.now()}`,
+                        title: 'Message not sent',
+                        body: 'Failed to encrypt this message. Please try again.',
+                    })
+                    return false
+                }
+            } else if (recipientId) {
                 const { e2eePrivateKey, user } = useAuthStore.getState()
 
                 if (!e2eePrivateKey || !user) {
@@ -809,6 +960,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     async (response: { ok: boolean; message?: string }) => {
                         if (!response?.ok) {
                             console.error('Message send failed:', response?.message)
+                            useNotificationStore.getState().addToast({
+                                id: `message-send-error-${Date.now()}`,
+                                title: 'Message not sent',
+                                body: response?.message || 'Failed to send message. Please try again.',
+                            })
                             resolve(false)
                             return
                         }
@@ -1249,6 +1405,42 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
     },
 
+    createChannel: async (name, description, isPrivate) => {
+        try {
+            let wrappedKey: string | undefined
+            let wrappedIv: string | undefined
+
+            if (isPrivate) {
+                const { e2eePrivateKey, user } = useAuthStore.getState()
+                if (!e2eePrivateKey || !user) {
+                    return { ok: false, message: 'End-to-end encryption is not ready yet. Please try again in a moment.' }
+                }
+
+                const channelKey = await generateGroupKey()
+                const wrapped = await wrapGroupKeyForMember(channelKey, e2eePrivateKey, String(user.id))
+                wrappedKey = wrapped.wrappedKey
+                wrappedIv = wrapped.wrappedIv
+
+                const response = await axios.post(`${API_URL}/channels`, {
+                    name,
+                    description,
+                    isPrivate,
+                    wrappedKey,
+                    wrappedIv,
+                })
+                cacheChannelKey(String(response.data.channel.id), channelKey)
+                return { ok: true }
+            }
+
+            await axios.post(`${API_URL}/channels`, { name, description, isPrivate })
+            return { ok: true }
+        } catch (error) {
+            console.error('Error creating channel:', error)
+            const axiosError = error as { response?: { data?: { message?: string } } }
+            return { ok: false, message: axiosError.response?.data?.message || 'Failed to create channel' }
+        }
+    },
+
     loadDirectConversations: async () => {
         try {
             const response = await axios.get(`${API_URL}/messages/direct-conversations`)
@@ -1307,6 +1499,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     lastMessageAt: getLastMessageTimestamp(processed) || null,
                 }),
             }))
+
+            try {
+                const readStateResponse = await axios.get(`${API_URL}/messages/direct/${userId}/read-state`)
+                if (readStateResponse.data.lastVisitedAt) {
+                    set((state) => ({
+                        readReceiptsByChatId: {
+                            ...state.readReceiptsByChatId,
+                            [String(userId)]: {
+                                ...state.readReceiptsByChatId[String(userId)],
+                                [String(userId)]: readStateResponse.data.lastVisitedAt,
+                            },
+                        },
+                    }))
+                }
+            } catch (error) {
+                console.error('Error loading DM read state:', error)
+            }
         } catch (error) {
             console.error('Error loading direct messages:', error)
         }
@@ -1477,6 +1686,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         : group,
                 ),
             }))
+
+            try {
+                const readStateResponse = await axios.get(`${API_URL}/group-chats/${groupChatId}/read-state`)
+                set((state) => ({
+                    readReceiptsByChatId: {
+                        ...state.readReceiptsByChatId,
+                        [String(groupChatId)]: {
+                            ...state.readReceiptsByChatId[String(groupChatId)],
+                            ...readStateResponse.data,
+                        },
+                    },
+                }))
+            } catch (error) {
+                console.error('Error loading group read state:', error)
+            }
         } catch (error) {
             console.error('Error loading group chat messages:', error)
         }
@@ -1492,6 +1716,121 @@ export const useChatStore = create<ChatState>((set, get) => ({
             return true
         } catch (error) {
             console.error('Error leaving group chat:', error)
+            return false
+        }
+    },
+
+    createInviteLink: async (targetType, targetId, options) => {
+        try {
+            const response = await axios.post(`${API_URL}/invites`, {
+                targetType,
+                targetId,
+                maxUses: options?.maxUses,
+                expiresInHours: options?.expiresInHours,
+            })
+            return { ...response.data, id: String(response.data.id), targetId: String(response.data.targetId) }
+        } catch (error) {
+            console.error('Error creating invite link:', error)
+            return null
+        }
+    },
+
+    listInviteLinks: async (targetType, targetId) => {
+        try {
+            const response = await axios.get(`${API_URL}/invites/target/${targetType}/${targetId}`)
+            return response.data.map((invite: InviteLink) => ({
+                ...invite,
+                id: String(invite.id),
+                targetId: String(invite.targetId),
+            }))
+        } catch (error) {
+            console.error('Error listing invite links:', error)
+            return []
+        }
+    },
+
+    revokeInviteLink: async (inviteId) => {
+        try {
+            await axios.delete(`${API_URL}/invites/${inviteId}`)
+            return true
+        } catch (error) {
+            console.error('Error revoking invite link:', error)
+            return false
+        }
+    },
+
+    previewInvite: async (code) => {
+        try {
+            const response = await axios.get(`${API_URL}/invites/${code}`)
+            return response.data
+        } catch (error) {
+            console.error('Error previewing invite:', error)
+            return null
+        }
+    },
+
+    redeemInvite: async (code) => {
+        try {
+            const response = await axios.post(`${API_URL}/invites/${code}/redeem`)
+            if (response.data.targetType === 'channel') {
+                await get().loadChannels()
+            } else {
+                await get().loadGroupChats()
+            }
+            return response.data
+        } catch (error) {
+            console.error('Error redeeming invite:', error)
+            return null
+        }
+    },
+
+    setGroupChatDisappearing: async (groupChatId, seconds) => {
+        try {
+            await axios.put(`${API_URL}/group-chats/${groupChatId}/settings`, {
+                disappearingMessagesSeconds: seconds,
+            })
+            set((state) => ({
+                groupChats: state.groupChats.map((group) =>
+                    group.id === String(groupChatId)
+                        ? { ...group, disappearingMessagesSeconds: seconds }
+                        : group,
+                ),
+            }))
+            return true
+        } catch (error) {
+            console.error('Error updating group disappearing messages:', error)
+            return false
+        }
+    },
+
+    loadDmDisappearingSeconds: async (peerId) => {
+        try {
+            const response = await axios.get(`${API_URL}/messages/direct/${peerId}/settings`)
+            set((state) => ({
+                dmDisappearingSecondsByPeerId: {
+                    ...state.dmDisappearingSecondsByPeerId,
+                    [String(peerId)]: response.data.disappearingMessagesSeconds || 0,
+                },
+            }))
+        } catch (error) {
+            console.error('Error loading DM disappearing messages setting:', error)
+        }
+    },
+
+    setDmDisappearing: async (peerId, seconds) => {
+        try {
+            await axios.put(`${API_URL}/messages/direct/${peerId}/settings`, {
+                disappearingMessagesSeconds: seconds,
+            })
+            set((state) => ({
+                dmDisappearingSecondsByPeerId: {
+                    ...state.dmDisappearingSecondsByPeerId,
+                    [String(peerId)]: seconds,
+                },
+            }))
+            return true
+        } catch (error) {
+            console.error('Error updating DM disappearing messages:', error)
             return false
         }
     },
@@ -1615,6 +1954,17 @@ const processIncomingMessage = async (message: Message) => {
             return { ...normalizedMessage, content }
         } catch (error) {
             console.error('E2EE group decrypt failed:', error)
+            return { ...normalizedMessage, content: '[Encrypted message]' }
+        }
+    }
+
+    if (normalizedMessage.channelId) {
+        try {
+            const channelKey = await getChannelKey(String(normalizedMessage.channelId), e2eePrivateKey)
+            const content = await decryptMessage(normalizedMessage.cipherText, normalizedMessage.cipherIv, channelKey)
+            return { ...normalizedMessage, content }
+        } catch (error) {
+            console.error('E2EE channel decrypt failed:', error)
             return { ...normalizedMessage, content: '[Encrypted message]' }
         }
     }

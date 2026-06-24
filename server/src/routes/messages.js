@@ -5,11 +5,16 @@ import { mkdirSync } from 'fs';
 import multer from 'multer';
 import { authenticateToken } from '../middleware/auth.js';
 import {
+	computeExpiresAt,
 	createMessage,
 	getChannelMessages,
+	getConversationTtlSeconds,
 	getDirectConversationSummaries,
 	getDirectMessages,
+	getDirectMessageSettings,
+	getDirectMessageVisit,
 	getGroupChatMessages,
+	getGroupChatVisits,
 	getMessageFileById,
 	getChannelFiles,
 	getDirectFiles,
@@ -19,6 +24,7 @@ import {
 	getReplyContextsByMessageIds,
 	markDirectConversationVisited,
 	searchMessages,
+	setDirectMessageSettings,
 	syncMessageMentions,
 	updateMessageFileInfo,
 } from '../models/Message.js';
@@ -377,10 +383,59 @@ router.get('/direct/:userId', authenticateToken, async (req, res) => {
 
 router.post('/direct/:userId/visit', authenticateToken, async (req, res) => {
 	try {
+		const visitedAt = new Date().toISOString();
 		markDirectConversationVisited(req.user.id, req.params.userId);
+
+		const io = req.app.get('io');
+		io.to(String(req.params.userId)).emit('dm-read', {
+			readerId: String(req.user.id),
+			peerId: String(req.params.userId),
+			lastVisitedAt: visitedAt,
+		});
+
 		return res.json({ ok: true });
 	} catch (error) {
 		return res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.get('/direct/:userId/read-state', authenticateToken, async (req, res) => {
+	try {
+		const visit = getDirectMessageVisit(req.params.userId, req.user.id);
+		res.json({ lastVisitedAt: visit?.lastVisitedAt || null });
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.get('/direct/:userId/settings', authenticateToken, async (req, res) => {
+	try {
+		const settings = getDirectMessageSettings(req.user.id, req.params.userId);
+		res.json({ disappearingMessagesSeconds: settings?.disappearingMessagesSeconds || 0 });
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.put('/direct/:userId/settings', authenticateToken, async (req, res) => {
+	try {
+		const { disappearingMessagesSeconds } = req.body;
+		const normalizedTtl = Math.max(0, Number(disappearingMessagesSeconds) || 0);
+		setDirectMessageSettings(req.user.id, req.params.userId, normalizedTtl);
+
+		const io = req.app.get('io');
+		io.to(String(req.params.userId)).emit('dm-settings-updated', {
+			peerId: String(req.user.id),
+			disappearingMessagesSeconds: normalizedTtl,
+		});
+		io.to(String(req.user.id)).emit('dm-settings-updated', {
+			peerId: String(req.params.userId),
+			disappearingMessagesSeconds: normalizedTtl,
+		});
+
+		res.json({ disappearingMessagesSeconds: normalizedTtl });
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
 	}
 });
 
@@ -540,6 +595,13 @@ router.post('/', authenticateToken, async (req, res) => {
 		}
 
 		const safeContent = isEncrypted ? '' : String(content || '').trim();
+		const ttlSeconds = getConversationTtlSeconds({
+			channelId,
+			recipientId,
+			groupChatId: null,
+			currentUserId: req.user.id,
+		});
+		const messageExpiresAt = computeExpiresAt(ttlSeconds);
 		const messageId = createMessage(
 			safeContent,
 			req.user.id,
@@ -554,6 +616,8 @@ router.post('/', authenticateToken, async (req, res) => {
 			isEncrypted ? 1 : 0,
 			replyState.replyToMessageId,
 			replyState.threadRootMessageId,
+			null,
+			messageExpiresAt,
 		);
 		const mentions = syncMessageMentions(messageId, safeContent);
 
@@ -568,6 +632,7 @@ router.post('/', authenticateToken, async (req, res) => {
 			timestamp: new Date(),
 			channelId,
 			recipientId,
+			expiresAt: messageExpiresAt,
 			cipherText: cipherText || null,
 			cipherIv: cipherIv || null,
 			isEncrypted: isEncrypted ? 1 : 0,
@@ -727,6 +792,13 @@ router.post(
 				return res.status(400).json({ message: replyState.error });
 			}
 
+			const ttlSeconds = getConversationTtlSeconds({
+				channelId,
+				recipientId,
+				groupChatId,
+				currentUserId: req.user.id,
+			});
+			const messageExpiresAt = computeExpiresAt(ttlSeconds);
 			const messageId = createMessage(
 				content || '',
 				req.user.id,
@@ -742,6 +814,7 @@ router.post(
 				replyState.replyToMessageId,
 				replyState.threadRootMessageId,
 				groupChatId || null,
+				messageExpiresAt,
 			);
 
 			const fileUrl = `/api/messages/file/${messageId}`;
@@ -759,6 +832,7 @@ router.post(
 				channelId: channelId || null,
 				recipientId: recipientId || null,
 				groupChatId: groupChatId || null,
+				expiresAt: messageExpiresAt,
 				fileUrl,
 				fileName: file.originalname,
 				fileType: file.mimetype,

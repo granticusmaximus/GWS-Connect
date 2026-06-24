@@ -256,6 +256,23 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_password_reset_requests_user ON password_reset_requests(userId, status);
 `);
 
+const channelColumns = db
+	.prepare("PRAGMA table_info('channels')")
+	.all()
+	.map((column) => column.name);
+
+if (!channelColumns.includes('slowModeSeconds')) {
+	db.prepare(
+		'ALTER TABLE channels ADD COLUMN slowModeSeconds INTEGER DEFAULT 0',
+	).run();
+}
+
+if (!channelColumns.includes('disappearingMessagesSeconds')) {
+	db.prepare(
+		'ALTER TABLE channels ADD COLUMN disappearingMessagesSeconds INTEGER DEFAULT 0',
+	).run();
+}
+
 const messageColumns = db
 	.prepare("PRAGMA table_info('messages')")
 	.all()
@@ -371,6 +388,35 @@ db.exec(`
     FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (wrappedByUserId) REFERENCES users(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS channel_keys (
+    channelId INTEGER NOT NULL,
+    userId INTEGER NOT NULL,
+    wrappedKey TEXT NOT NULL,
+    wrappedIv TEXT NOT NULL,
+    wrappedByUserId INTEGER NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (channelId, userId),
+    FOREIGN KEY (channelId) REFERENCES channels(id) ON DELETE CASCADE,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (wrappedByUserId) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS invite_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    targetType TEXT NOT NULL CHECK(targetType IN ('channel', 'group')),
+    targetId INTEGER NOT NULL,
+    createdBy INTEGER NOT NULL,
+    maxUses INTEGER,
+    useCount INTEGER DEFAULT 0,
+    expiresAt DATETIME,
+    revokedAt DATETIME,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_invite_links_target ON invite_links(targetType, targetId);
 `);
 
 if (!messageColumns.includes('groupChatId')) {
@@ -381,11 +427,78 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_group_chat ON messages(groupChatId);
 `);
 
+const groupChatColumns = db
+	.prepare("PRAGMA table_info('group_chats')")
+	.all()
+	.map((column) => column.name);
+
+if (!groupChatColumns.includes('disappearingMessagesSeconds')) {
+	db.prepare(
+		'ALTER TABLE group_chats ADD COLUMN disappearingMessagesSeconds INTEGER DEFAULT 0',
+	).run();
+}
+
+if (!messageColumns.includes('expiresAt')) {
+	db.prepare('ALTER TABLE messages ADD COLUMN expiresAt DATETIME').run();
+}
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_messages_expires_at ON messages(expiresAt);
+
+  CREATE TABLE IF NOT EXISTS direct_message_settings (
+    userId1 INTEGER NOT NULL,
+    userId2 INTEGER NOT NULL,
+    disappearingMessagesSeconds INTEGER DEFAULT 0,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (userId1, userId2),
+    FOREIGN KEY (userId1) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (userId2) REFERENCES users(id) ON DELETE CASCADE
+  );
+`);
+
 db.prepare(
 	`UPDATE users
    SET avatar = ?
    WHERE avatar IS NULL OR TRIM(avatar) = ''`,
 ).run(DEFAULT_AVATAR);
+
+const ftsTableExists = db
+	.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'")
+	.get();
+
+if (!ftsTableExists) {
+	db.exec(`
+    CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='id');
+
+    INSERT INTO messages_fts(rowid, content)
+      SELECT id, CASE WHEN isEncrypted = 0 THEN content ELSE '' END FROM messages;
+  `);
+}
+
+// Triggers are redefined on every boot (DROP + CREATE) so schema fixes apply
+// to existing databases, not just freshly created ones.
+db.exec(`
+  DROP TRIGGER IF EXISTS messages_fts_ai;
+  DROP TRIGGER IF EXISTS messages_fts_ad;
+  DROP TRIGGER IF EXISTS messages_fts_au;
+
+  CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, content)
+      VALUES (new.id, CASE WHEN new.isEncrypted = 0 THEN new.content ELSE '' END);
+  END;
+
+  CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content)
+      VALUES('delete', old.id, CASE WHEN old.isEncrypted = 0 THEN old.content ELSE '' END);
+  END;
+
+  CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content)
+      VALUES('delete', old.id, CASE WHEN old.isEncrypted = 0 THEN old.content ELSE '' END);
+    INSERT INTO messages_fts(rowid, content)
+      VALUES (new.id, CASE WHEN new.isEncrypted = 0 THEN new.content ELSE '' END);
+  END;
+`);
 
 console.log('SQLite database initialized at:', dbPath);
 

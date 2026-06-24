@@ -39,7 +39,7 @@ router.put(
 	requireChannelManagerOrAdmin('channelId'),
 	(req, res) => {
 		try {
-			const { name, description, isPrivate } = req.body;
+			const { name, description, isPrivate, slowModeSeconds, disappearingMessagesSeconds } = req.body;
 			const updates = [];
 			const values = [];
 
@@ -54,6 +54,16 @@ router.put(
 			if (isPrivate !== undefined) {
 				updates.push('isPrivate = ?');
 				values.push(isPrivate ? 1 : 0);
+			}
+			if (slowModeSeconds !== undefined) {
+				const normalizedSlowMode = Math.max(0, Math.min(21600, Number(slowModeSeconds) || 0));
+				updates.push('slowModeSeconds = ?');
+				values.push(normalizedSlowMode);
+			}
+			if (disappearingMessagesSeconds !== undefined) {
+				const normalizedTtl = Math.max(0, Number(disappearingMessagesSeconds) || 0);
+				updates.push('disappearingMessagesSeconds = ?');
+				values.push(normalizedTtl);
 			}
 
 			if (updates.length === 0) {

@@ -19,6 +19,7 @@ import friendRoutes from './routes/friends.js';
 import notificationRoutes from './routes/notifications.js';
 import pollRoutes from './routes/polls.js';
 import gifRoutes from './routes/gifs.js';
+import inviteRoutes from './routes/invites.js';
 import { authenticateSocket } from './middleware/auth.js';
 import { canSendMessage, getUserRole } from './middleware/roles.js';
 import { canAccessChannel } from './models/Channel.js';
@@ -146,6 +147,7 @@ app.use('/api/manager', managerRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/polls', pollRoutes);
 app.use('/api/gifs', gifRoutes);
+app.use('/api/invites', inviteRoutes);
 
 const desktopClientDist = process.env.DESKTOP_CLIENT_DIST;
 if (desktopClientDist && existsSync(desktopClientDist)) {
@@ -590,9 +592,16 @@ io.on('connection', async (socket) => {
 			}
 
 			// Save message to database
-			const { createMessage, syncMessageMentions } =
+			const { createMessage, syncMessageMentions, getConversationTtlSeconds, computeExpiresAt } =
 				await import('./models/Message.js');
 			const safeContent = isEncrypted ? '' : String(content || '');
+			const ttlSeconds = getConversationTtlSeconds({
+				channelId,
+				recipientId,
+				groupChatId,
+				currentUserId: socket.user.id,
+			});
+			const messageExpiresAt = computeExpiresAt(ttlSeconds);
 			const messageId = createMessage(
 				safeContent,
 				socket.user.id,
@@ -608,6 +617,7 @@ io.on('connection', async (socket) => {
 				replyState.replyToMessageId,
 				replyState.threadRootMessageId,
 				groupChatId || null,
+				messageExpiresAt,
 			);
 			const mentions = syncMessageMentions(messageId, safeContent);
 
@@ -625,6 +635,7 @@ io.on('connection', async (socket) => {
 				channelId,
 				recipientId,
 				groupChatId,
+				expiresAt: messageExpiresAt,
 				cipherText: cipherText || null,
 				cipherIv: cipherIv || null,
 				isEncrypted: isEncrypted ? 1 : 0,
@@ -1689,6 +1700,49 @@ io.on('connection', async (socket) => {
 		}
 	});
 });
+
+const DISAPPEARING_MESSAGE_SWEEP_INTERVAL_MS = 30 * 1000;
+
+const sweepExpiredMessages = async () => {
+	try {
+		const { getExpiredMessages, expireMessages } = await import('./models/Message.js');
+		const expired = getExpiredMessages();
+		if (expired.length === 0) {
+			return;
+		}
+
+		expireMessages(expired.map((message) => message.id));
+
+		for (const message of expired) {
+			const updated = {
+				id: message.id.toString(),
+				content: '',
+				isDeleted: 1,
+				deletedAt: new Date().toISOString(),
+				fileUrl: null,
+				fileName: null,
+				fileType: null,
+			};
+
+			if (message.groupChatId) {
+				io.to(`group:${message.groupChatId}`).emit('message-updated', updated);
+			} else if (message.channelId) {
+				io.to(`channel:${message.channelId}`).emit('message-updated', updated);
+			} else if (message.recipientId) {
+				io.to(String(message.recipientId)).emit('message-updated', updated);
+				io.to(String(message.senderId)).emit('message-updated', updated);
+			}
+		}
+	} catch (error) {
+		await logSocketError(error, {
+			file: 'index.js',
+			function: 'sweepExpiredMessages',
+			operation: 'Expiring disappearing messages and broadcasting updates',
+		});
+	}
+};
+
+setInterval(() => void sweepExpiredMessages(), DISAPPEARING_MESSAGE_SWEEP_INTERVAL_MS);
 
 process.on('unhandledRejection', (error) => {
 	const logMessage = async () => {

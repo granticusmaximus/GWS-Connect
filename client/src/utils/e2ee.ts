@@ -4,6 +4,7 @@ import { API_URL } from '../config/runtime'
 const publicKeyCache = new Map<string, JsonWebKey>()
 const sharedKeyCache = new Map<string, CryptoKey>()
 const groupKeyCache = new Map<string, CryptoKey>()
+const channelKeyCache = new Map<string, CryptoKey>()
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -239,8 +240,29 @@ export const cacheGroupKey = (groupChatId: string, groupKey: CryptoKey) => {
     groupKeyCache.set(groupChatId, groupKey)
 }
 
+export const getChannelKey = async (
+    channelId: string,
+    privateKey: CryptoKey,
+) => {
+    if (channelKeyCache.has(channelId)) {
+        return channelKeyCache.get(channelId) as CryptoKey
+    }
+
+    const response = await axios.get(`${API_URL}/channels/${channelId}/keys/me`)
+    const { wrappedKey, wrappedIv, wrappedByUserId } = response.data
+    const channelKey = await unwrapGroupKey(wrappedKey, wrappedIv, privateKey, String(wrappedByUserId))
+
+    channelKeyCache.set(channelId, channelKey)
+    return channelKey
+}
+
+export const cacheChannelKey = (channelId: string, channelKey: CryptoKey) => {
+    channelKeyCache.set(channelId, channelKey)
+}
+
 export const clearE2eeCache = () => {
     publicKeyCache.clear()
     sharedKeyCache.clear()
     groupKeyCache.clear()
+    channelKeyCache.clear()
 }
