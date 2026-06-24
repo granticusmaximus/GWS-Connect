@@ -254,6 +254,21 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_password_reset_requests_status ON password_reset_requests(status, requestedAt);
   CREATE INDEX IF NOT EXISTS idx_password_reset_requests_user ON password_reset_requests(userId, status);
+
+  CREATE TABLE IF NOT EXISTS friends (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId INTEGER NOT NULL,
+    friendId INTEGER NOT NULL,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'rejected')),
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (friendId) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(userId, friendId)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_friends_userId ON friends(userId);
+  CREATE INDEX IF NOT EXISTS idx_friends_friendId ON friends(friendId);
+  CREATE INDEX IF NOT EXISTS idx_friends_status ON friends(status);
 `);
 
 const channelColumns = db
