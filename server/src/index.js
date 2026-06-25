@@ -52,6 +52,9 @@ if (missingEnvVars.length > 0) {
 }
 
 const app = express();
+// Behind a single reverse proxy (nginx/traefik) in production — trust only
+// the first hop's X-Forwarded-For so rate limiting keys on the real client IP.
+app.set('trust proxy', 1);
 const httpServer = createServer(app);
 const rawOrigins = process.env.CLIENT_URL || 'http://localhost:5173';
 const allowedOrigins = rawOrigins.split(',').map((origin) => origin.trim());
