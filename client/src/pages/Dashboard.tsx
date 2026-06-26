@@ -11,7 +11,7 @@ import ForcePasswordChangeModal from '../components/ForcePasswordChangeModal'
 const SIDEBAR_COLLAPSE_BREAKPOINT = 1024
 
 export default function Dashboard() {
-  const { user, changePassword, error } = useAuthStore()
+  const { user, changePassword, error, e2eeKeyRecoveryNeeded } = useAuthStore()
   const { restoreActiveChat } = useChatStore()
   const { autoCloseSidebarOnSelect } = useThemeStore()
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
@@ -98,6 +98,7 @@ export default function Dashboard() {
         isOpen={!!user?.mustChangePassword}
         error={error}
         loading={savingPassword}
+        e2eeKeyRecoveryNeeded={e2eeKeyRecoveryNeeded}
         onSave={async (currentPassword, newPassword) => {
           setSavingPassword(true)
           try {

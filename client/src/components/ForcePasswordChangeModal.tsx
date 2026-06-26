@@ -5,6 +5,7 @@ interface ForcePasswordChangeModalProps {
   onSave: (currentPassword: string, newPassword: string) => Promise<void>
   loading: boolean
   error?: string | null
+  e2eeKeyRecoveryNeeded?: boolean
 }
 
 const isStrongPassword = (value: string) =>
@@ -15,11 +16,13 @@ export default function ForcePasswordChangeModal({
   onSave,
   loading,
   error,
+  e2eeKeyRecoveryNeeded,
 }: ForcePasswordChangeModalProps) {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
+  const [recoveryAcknowledged, setRecoveryAcknowledged] = useState(false)
 
   if (!isOpen) return null
 
@@ -64,6 +67,28 @@ export default function ForcePasswordChangeModal({
           </div>
         )}
 
+        {e2eeKeyRecoveryNeeded && (
+          <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-200">
+            <p className="font-semibold">Encryption key cannot be recovered</p>
+            <p className="mt-1">
+              Your previous encryption key cannot be unlocked because your
+              password was reset. Continuing will generate a new encryption
+              key. <strong>You will permanently lose access to any
+              previously end-to-end encrypted messages</strong> — this
+              cannot be undone.
+            </p>
+            <label className="mt-2 flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={recoveryAcknowledged}
+                onChange={(e) => setRecoveryAcknowledged(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>I understand and want to continue.</span>
+            </label>
+          </div>
+        )}
+
         <div className="mt-4 space-y-3">
           <input
             type="password"
@@ -92,7 +117,7 @@ export default function ForcePasswordChangeModal({
           <button
             type="button"
             onClick={handleSave}
-            disabled={loading}
+            disabled={loading || (e2eeKeyRecoveryNeeded && !recoveryAcknowledged)}
             className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm disabled:opacity-60"
           >
             {loading ? 'Saving...' : 'Save'}

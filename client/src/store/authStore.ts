@@ -53,6 +53,7 @@ interface AuthState {
     error: string | null
     e2eePrivateKey: CryptoKey | null
     e2eeReady: boolean
+    e2eeKeyRecoveryNeeded: boolean
     login: (email: string, password: string) => Promise<void>
     changePassword: (currentPassword: string, newPassword: string) => Promise<void>
     register: (username: string, email: string, password: string) => Promise<void>
@@ -73,7 +74,7 @@ axios.interceptors.request.use(
     (error) => Promise.reject(error)
 )
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
     user: null,
     token: null,
     loading: false,
@@ -81,6 +82,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     error: null,
     e2eePrivateKey: null,
     e2eeReady: false,
+    e2eeKeyRecoveryNeeded: false,
 
     initializeAuth: () => {
         const token = localStorage.getItem('token')
@@ -101,7 +103,15 @@ export const useAuthStore = create<AuthState>((set) => ({
                         })
                     })
                     .catch(() => {
-                        set({ token, user: parsedUser, initialized: true })
+                        sessionStorage.removeItem('e2eePrivateKeyJwk')
+                        set({
+                            token,
+                            user: parsedUser,
+                            initialized: true,
+                            e2eePrivateKey: null,
+                            e2eeReady: false,
+                            e2eeKeyRecoveryNeeded: true,
+                        })
                     })
                 return
             }
@@ -118,16 +128,27 @@ export const useAuthStore = create<AuthState>((set) => ({
             const { token, user } = response.data
             const normalizedUser = normalizeUserAvatar(user)
 
+            let e2eeKeyRecoveryNeeded = false
             if (normalizedUser?.e2eeEncryptedPrivateKey && normalizedUser?.e2eeSalt && normalizedUser?.e2eeIv) {
-                const privateKeyJwk = await decryptPrivateKeyJwk(
-                    normalizedUser.e2eeEncryptedPrivateKey,
-                    password,
-                    normalizedUser.e2eeSalt,
-                    normalizedUser.e2eeIv,
-                )
-                const privateKey = await importPrivateKey(privateKeyJwk)
-                sessionStorage.setItem('e2eePrivateKeyJwk', JSON.stringify(privateKeyJwk))
-                set({ e2eePrivateKey: privateKey, e2eeReady: true })
+                try {
+                    const privateKeyJwk = await decryptPrivateKeyJwk(
+                        normalizedUser.e2eeEncryptedPrivateKey,
+                        password,
+                        normalizedUser.e2eeSalt,
+                        normalizedUser.e2eeIv,
+                    )
+                    const privateKey = await importPrivateKey(privateKeyJwk)
+                    sessionStorage.setItem('e2eePrivateKeyJwk', JSON.stringify(privateKeyJwk))
+                    set({ e2eePrivateKey: privateKey, e2eeReady: true })
+                } catch {
+                    // The private key is encrypted under a different password than the one
+                    // just used (e.g. an admin password reset). The password itself was
+                    // already verified by the server above, so this is not an auth failure -
+                    // surface a recovery state instead of blocking login entirely.
+                    sessionStorage.removeItem('e2eePrivateKeyJwk')
+                    set({ e2eePrivateKey: null, e2eeReady: false })
+                    e2eeKeyRecoveryNeeded = true
+                }
             } else {
                 set({ e2eePrivateKey: null, e2eeReady: false })
             }
@@ -136,7 +157,13 @@ export const useAuthStore = create<AuthState>((set) => ({
             localStorage.setItem('user', JSON.stringify(normalizedUser))
             axios.defaults.headers.common['Authorization'] = `Bearer ${token}`
 
-            set({ user: normalizedUser, token, loading: false, initialized: true })
+            set({
+                user: normalizedUser,
+                token,
+                loading: false,
+                initialized: true,
+                e2eeKeyRecoveryNeeded,
+            })
         } catch (error: unknown) {
             const axiosError = error as AxiosError<{ message?: string }>
             const message = axiosError.response?.data?.message || 'Login failed'
@@ -186,7 +213,14 @@ export const useAuthStore = create<AuthState>((set) => ({
         sessionStorage.removeItem('e2eePrivateKeyJwk')
         delete axios.defaults.headers.common['Authorization']
         clearE2eeCache()
-        set({ user: null, token: null, initialized: true, e2eePrivateKey: null, e2eeReady: false })
+        set({
+            user: null,
+            token: null,
+            initialized: true,
+            e2eePrivateKey: null,
+            e2eeReady: false,
+            e2eeKeyRecoveryNeeded: false,
+        })
     },
 
     updateProfile: async (updates: Partial<User>) => {
@@ -207,18 +241,75 @@ export const useAuthStore = create<AuthState>((set) => ({
     },
     changePassword: async (currentPassword: string, newPassword: string) => {
         try {
+            const { user, e2eeKeyRecoveryNeeded } = get()
+
+            let e2eeUpdate: {
+                e2eePublicKey?: JsonWebKey
+                e2eeEncryptedPrivateKey: string
+                e2eeSalt: string
+                e2eeIv: string
+            } | null = null
+            let rotated = false
+
+            if (user?.e2eeEncryptedPrivateKey && user?.e2eeSalt && user?.e2eeIv) {
+                try {
+                    const privateKeyJwk = await decryptPrivateKeyJwk(
+                        user.e2eeEncryptedPrivateKey,
+                        currentPassword,
+                        user.e2eeSalt,
+                        user.e2eeIv,
+                    )
+                    const reEncrypted = await encryptPrivateKeyJwk(privateKeyJwk, newPassword)
+                    e2eeUpdate = {
+                        e2eeEncryptedPrivateKey: reEncrypted.encryptedPrivateKey,
+                        e2eeSalt: reEncrypted.salt,
+                        e2eeIv: reEncrypted.iv,
+                    }
+                    const privateKey = await importPrivateKey(privateKeyJwk)
+                    sessionStorage.setItem('e2eePrivateKeyJwk', JSON.stringify(privateKeyJwk))
+                    set({ e2eePrivateKey: privateKey, e2eeReady: true, e2eeKeyRecoveryNeeded: false })
+                    rotated = true
+                } catch {
+                    // currentPassword can't decrypt the existing key - either it's wrong
+                    // (server will reject below via bcrypt) or this is the recovery case
+                    // (admin-issued temp password, original key unrecoverable).
+                }
+            }
+
+            if (!rotated && e2eeKeyRecoveryNeeded) {
+                // No usable old key. Generate a fresh identity instead of leaving the
+                // account without one - old E2EE content is permanently unrecoverable.
+                // The UI must have already warned the user before calling this.
+                const { publicKeyJwk, privateKeyJwk } = await generateIdentityKeyPair()
+                const encrypted = await encryptPrivateKeyJwk(privateKeyJwk, newPassword)
+                e2eeUpdate = {
+                    e2eePublicKey: publicKeyJwk,
+                    e2eeEncryptedPrivateKey: encrypted.encryptedPrivateKey,
+                    e2eeSalt: encrypted.salt,
+                    e2eeIv: encrypted.iv,
+                }
+                clearE2eeCache()
+                const privateKey = await importPrivateKey(privateKeyJwk)
+                sessionStorage.setItem('e2eePrivateKeyJwk', JSON.stringify(privateKeyJwk))
+                set({ e2eePrivateKey: privateKey, e2eeReady: true, e2eeKeyRecoveryNeeded: false })
+            }
+
             const response = await axios.post(`${API_URL}/auth/change-password`, {
                 currentPassword,
                 newPassword,
+                ...(e2eeUpdate ?? {}),
             })
-            if (response.data?.mustChangePassword === 0) {
-                set((state) => {
-                    if (!state.user) return state
-                    const updatedUser = { ...state.user, mustChangePassword: 0 }
-                    localStorage.setItem('user', JSON.stringify(updatedUser))
-                    return { user: updatedUser }
-                })
-            }
+
+            set((state) => {
+                if (!state.user) return state
+                const updatedUser = {
+                    ...state.user,
+                    ...(response.data?.mustChangePassword === 0 ? { mustChangePassword: 0 } : {}),
+                    ...(e2eeUpdate ?? {}),
+                }
+                localStorage.setItem('user', JSON.stringify(updatedUser))
+                return { user: updatedUser }
+            })
         } catch (error: unknown) {
             const axiosError = error as AxiosError<{ message?: string }>
             const message = axiosError.response?.data?.message || 'Password change failed'

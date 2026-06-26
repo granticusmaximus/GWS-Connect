@@ -290,13 +290,35 @@ router.post(
 		}
 
 		try {
-			const { currentPassword, newPassword } = req.body;
+			const {
+				currentPassword,
+				newPassword,
+				e2eePublicKey,
+				e2eeEncryptedPrivateKey,
+				e2eeSalt,
+				e2eeIv,
+			} = req.body;
 
 			if (!isStrongPassword(newPassword)) {
 				return res.status(400).json({
 					message:
 						'Password must be at least 8 characters and include letters, numbers, and a special character',
 				});
+			}
+
+			const e2eeBundle = [
+				e2eePublicKey,
+				e2eeEncryptedPrivateKey,
+				e2eeSalt,
+				e2eeIv,
+			];
+			const e2eeBundleProvided = e2eeBundle.filter(
+				(field) => field !== undefined && field !== null,
+			);
+			if (e2eeBundleProvided.length > 0 && e2eeBundleProvided.length < 4) {
+				return res
+					.status(400)
+					.json({ message: 'Incomplete encryption key update' });
 			}
 
 			const user = findUserByEmail(req.user.email);
@@ -312,11 +334,19 @@ router.post(
 			const salt = await bcrypt.genSalt(10);
 			const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-			const { updateUser } = await import('../models/User.js');
-			updateUser(user.id, {
+			const updates = {
 				password: hashedPassword,
 				mustChangePassword: 0,
-			});
+			};
+			if (e2eeBundleProvided.length === 4) {
+				updates.e2eePublicKey = JSON.stringify(e2eePublicKey);
+				updates.e2eeEncryptedPrivateKey = e2eeEncryptedPrivateKey;
+				updates.e2eeSalt = e2eeSalt;
+				updates.e2eeIv = e2eeIv;
+			}
+
+			const { updateUser } = await import('../models/User.js');
+			updateUser(user.id, updates);
 
 			res.json({ message: 'Password updated', mustChangePassword: 0 });
 		} catch (error) {
