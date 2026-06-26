@@ -1,5 +1,5 @@
-import nodemailer from 'nodemailer';
-import { getMailerConfig, getFromAddress, getReplyToAddress } from './email.js';
+import sgMail from '@sendgrid/mail';
+import { getFromAddress, getReplyToAddress } from './email.js';
 
 const ERROR_RECIPIENT = 'grant@gwsapp.net';
 
@@ -68,8 +68,8 @@ export const sendErrorNotification = async ({
 	context,
 	activeUsers,
 }) => {
-	if (!process.env.SMTP_HOST) {
-		console.warn('SMTP_HOST is not configured. Skipping error email.');
+	if (!process.env.SENDGRID_API_KEY) {
+		console.warn('SENDGRID_API_KEY is not configured. Skipping error email.');
 		return;
 	}
 
@@ -101,9 +101,9 @@ ${safeStringify(activeUsers || [])}
 		context: payload,
 		activeUsers,
 	});
-	const transporter = nodemailer.createTransport(getMailerConfig());
+	sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-	await transporter.sendMail({
+	await sgMail.send({
 		from: getFromAddress(),
 		replyTo: getReplyToAddress(),
 		to: ERROR_RECIPIENT,

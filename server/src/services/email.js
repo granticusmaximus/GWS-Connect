@@ -1,32 +1,24 @@
-import nodemailer from 'nodemailer';
+import sgMail from '@sendgrid/mail';
 
-export const getMailerConfig = () => ({
-	host: process.env.SMTP_HOST,
-	port: Number(process.env.SMTP_PORT || 587),
-	secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
-	auth: process.env.SMTP_USER
-		? {
-				user: process.env.SMTP_USER,
-				pass: process.env.SMTP_PASS,
-			}
-		: undefined,
-});
+const getSendGridClient = () => {
+	if (!process.env.SENDGRID_API_KEY) {
+		throw new Error('SENDGRID_API_KEY is not configured');
+	}
+	sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+	return sgMail;
+};
 
 export const getFromAddress = () =>
-	process.env.SMTP_FROM || 'no-reply@gws-connect.local';
+	process.env.EMAIL_FROM || 'no-reply@gws-connect.local';
 
-export const getReplyToAddress = () => process.env.SMTP_REPLY_TO || undefined;
+export const getReplyToAddress = () => process.env.EMAIL_REPLY_TO || undefined;
 
 export const sendTemporaryPasswordEmail = async ({
 	to,
 	username,
 	tempPassword,
 }) => {
-	if (!process.env.SMTP_HOST) {
-		throw new Error('SMTP_HOST is not configured');
-	}
-
-	const transporter = nodemailer.createTransport(getMailerConfig());
+	const sgMail = getSendGridClient();
 
 	const subject = 'Your GWS Connect temporary password';
 	const loginUrl = 'https://connect.gwsapp.net/login';
@@ -55,7 +47,7 @@ export const sendTemporaryPasswordEmail = async ({
 	</body>
 </html>`;
 
-	await transporter.sendMail({
+	await sgMail.send({
 		from: getFromAddress(),
 		replyTo: getReplyToAddress(),
 		to,
@@ -70,11 +62,7 @@ export const sendAdminResetPasswordEmail = async ({
 	username,
 	tempPassword,
 }) => {
-	if (!process.env.SMTP_HOST) {
-		throw new Error('SMTP_HOST is not configured');
-	}
-
-	const transporter = nodemailer.createTransport(getMailerConfig());
+	const sgMail = getSendGridClient();
 
 	const subject = 'Your GWS Connect password reset';
 	const loginUrl = 'https://connect.gwsapp.net/login';
@@ -104,7 +92,7 @@ export const sendAdminResetPasswordEmail = async ({
 	</body>
 </html>`;
 
-	await transporter.sendMail({
+	await sgMail.send({
 		from: getFromAddress(),
 		replyTo: getReplyToAddress(),
 		to,

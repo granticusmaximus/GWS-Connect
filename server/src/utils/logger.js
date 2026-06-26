@@ -86,7 +86,7 @@ export const logError = async (error, context = {}, notifyByEmail = true) => {
 		);
 
 		// Send detailed email if configured
-		if (notifyByEmail && process.env.SMTP_HOST) {
+		if (notifyByEmail && process.env.SENDGRID_API_KEY) {
 			await sendErrorNotification({
 				error,
 				context: errorLog,
