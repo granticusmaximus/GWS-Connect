@@ -723,12 +723,29 @@ router.post(
 	upload.single('file'),
 	async (req, res) => {
 		try {
-			const { channelId, recipientId, groupChatId, content, replyToMessageId } =
-				req.body || {};
+			const {
+				channelId,
+				recipientId,
+				groupChatId,
+				content,
+				replyToMessageId,
+				fileIv,
+				encryptedFileMeta,
+				fileMetaIv,
+			} = req.body || {};
 			const file = req.file;
 
 			if (!file) {
 				return res.status(400).json({ message: 'File required' });
+			}
+
+			// Every attachment is E2EE - never store one without the client
+			// having encrypted it first, the same stance taken for channel text
+			// messages.
+			if (!fileIv || !encryptedFileMeta || !fileMetaIv) {
+				return res
+					.status(400)
+					.json({ message: 'Attachment encryption metadata is required' });
 			}
 
 			const targetCount = [channelId, recipientId, groupChatId].filter(Boolean).length;
@@ -805,16 +822,17 @@ router.post(
 				channelId || null,
 				recipientId || null,
 				null,
-				file.originalname,
-				file.mimetype,
+				encryptedFileMeta,
+				null,
 				file.filename,
 				null,
-				null,
-				0,
+				fileMetaIv,
+				1,
 				replyState.replyToMessageId,
 				replyState.threadRootMessageId,
 				groupChatId || null,
 				messageExpiresAt,
+				fileIv,
 			);
 
 			const fileUrl = `/api/messages/file/${messageId}`;
@@ -834,8 +852,11 @@ router.post(
 				groupChatId: groupChatId || null,
 				expiresAt: messageExpiresAt,
 				fileUrl,
-				fileName: file.originalname,
-				fileType: file.mimetype,
+				fileName: encryptedFileMeta,
+				fileType: null,
+				fileIv,
+				cipherIv: fileMetaIv,
+				isEncrypted: 1,
 				timestamp: new Date(),
 				reactions: [],
 				mentions,
@@ -1031,6 +1052,16 @@ router.get('/file/:messageId', authenticateToken, async (req, res) => {
 			) {
 				return res.status(403).json({ message: 'Access denied' });
 			}
+		} else if (message.groupChatId) {
+			const access = canAccessGroupChat(message.groupChatId, req.user.id);
+			if (!access.groupChat) {
+				return res.status(404).json({ message: 'Group chat not found' });
+			}
+			if (!access.allowed) {
+				return res.status(403).json({ message: access.reason });
+			}
+		} else {
+			return res.status(403).json({ message: 'Access denied' });
 		}
 
 		const absolutePath = path.join(uploadsDir, message.filePath);

@@ -16,7 +16,8 @@ import InviteModal from './InviteModal'
 import PollCard from './PollCard'
 import ChatFilesPanel from './ChatFilesPanel'
 import DocumentPreview from './DocumentPreview'
-import { 
+import MessageAttachment from './MessageAttachment'
+import {
   ClockIcon,
   ExclamationTriangleIcon,
   FaceFrownIcon,
@@ -24,7 +25,6 @@ import {
   HandThumbDownIcon,
   HandThumbUpIcon,
   HeartIcon,
-  PaperClipIcon,
   HashtagIcon,
   MagnifyingGlassIcon,
   PencilIcon,
@@ -732,15 +732,6 @@ export default function ChatWindow() {
     }
   }
 
-  const buildMessageFileUrl = useCallback((fileUrl?: string | null) => {
-    if (!fileUrl) return ''
-    const needsAuth = fileUrl.startsWith('/api/messages/file/')
-    const joiner = fileUrl.includes('?') ? '&' : '?'
-    return needsAuth && authToken
-      ? `${fileUrl}${joiner}token=${encodeURIComponent(authToken)}`
-      : fileUrl
-  }, [authToken])
-
   const jumpToMessage = useCallback((messageId?: string | null) => {
     if (!messageId) return
 
@@ -923,7 +914,7 @@ export default function ChatWindow() {
     <div className={layout === 'sidebar' ? 'flex-1 min-h-0 overflow-hidden bg-[#2b2d31]' : 'flex-1 overflow-hidden'}>
       <ChatFilesPanel
         files={filesByChatId[currentChatId || ''] || []}
-        authToken={authToken}
+        conversationContext={{ channelId: activeChannel, recipientId: activeDM, groupChatId: activeGroupChat }}
         onOpenMedia={(payload) => setMediaViewer(payload)}
         onOpenDocument={(payload) => setMediaViewer(payload)}
       />
@@ -1165,59 +1156,11 @@ export default function ChatWindow() {
 
                     {hasFile && !isDeleted && message.fileUrl && (
                       <div className="mt-2">
-                        {(() => {
-                          const fileUrl = buildMessageFileUrl(message.fileUrl)
-
-                          if (message.fileType?.startsWith('image/')) {
-                            return (
-                              <button
-                                type="button"
-                                onClick={() => setMediaViewer({ url: fileUrl || '', type: 'image', name: message.fileName || 'Image' })}
-                                className="block"
-                                aria-label="Open image"
-                              >
-                                <img
-                                  src={fileUrl || ''}
-                                  alt={message.fileName || 'Image'}
-                                  className={`${mediaWidthClassName} rounded-lg`}
-                                />
-                              </button>
-                            )
-                          }
-
-                          if (message.fileType?.startsWith('video/')) {
-                            return (
-                              <button
-                                type="button"
-                                onClick={() => setMediaViewer({ url: fileUrl || '', type: 'video', name: message.fileName || 'Video' })}
-                                className="block"
-                                aria-label="Open video"
-                              >
-                                <video src={fileUrl || ''} className={`${mediaWidthClassName} rounded-lg`} controls />
-                              </button>
-                            )
-                          }
-
-                          return (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setMediaViewer({
-                                  url: fileUrl || '',
-                                  type: 'document',
-                                  name: message.fileName || 'Document',
-                                  mime: message.fileType || undefined,
-                                })
-                              }
-                              className="break-words text-primary-600 hover:underline dark:text-primary-400 [overflow-wrap:anywhere]"
-                            >
-                              <span className="inline-flex items-center gap-1">
-                                <PaperClipIcon className="h-4 w-4" />
-                                {message.fileName || 'Document'}
-                              </span>
-                            </button>
-                          )
-                        })()}
+                        <MessageAttachment
+                          message={message}
+                          mediaWidthClassName={mediaWidthClassName}
+                          onOpen={(payload) => setMediaViewer(payload)}
+                        />
                       </div>
                     )}
 

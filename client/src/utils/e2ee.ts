@@ -181,6 +181,32 @@ export const decryptMessage = async (
     return decoder.decode(plaintext)
 }
 
+// Like encryptMessage/decryptMessage, but for raw bytes (e.g. file uploads)
+// rather than text - the ciphertext stays as an ArrayBuffer instead of being
+// base64-encoded, since it can be arbitrarily large (avoids ~33% bloat from
+// base64-encoding a whole file body). Only the IV is a transportable string.
+export const encryptBytes = async (data: ArrayBuffer, key: CryptoKey) => {
+    const iv = crypto.getRandomValues(new Uint8Array(12)).buffer
+    const cipher = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: new Uint8Array(iv) },
+        key,
+        data,
+    )
+
+    return {
+        cipher,
+        iv: toBase64(iv),
+    }
+}
+
+export const decryptBytes = async (cipher: ArrayBuffer, iv: string, key: CryptoKey) => {
+    return crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: new Uint8Array(fromBase64(iv)) },
+        key,
+        cipher,
+    )
+}
+
 export const generateGroupKey = async () =>
     crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt'])
 

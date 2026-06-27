@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { io, Socket } from 'socket.io-client'
 import axios from 'axios'
 import { API_URL, SOCKET_URL } from '../config/runtime'
-import { getSharedKey, decryptMessage, encryptMessage, generateGroupKey, getGroupKey, wrapGroupKeyForMember, cacheGroupKey, getChannelKey, cacheChannelKey } from '../utils/e2ee'
+import { getSharedKey, decryptMessage, encryptMessage, encryptBytes, decryptBytes, generateGroupKey, getGroupKey, wrapGroupKeyForMember, cacheGroupKey, getChannelKey, cacheChannelKey } from '../utils/e2ee'
 import type { MessageMention } from '../utils/mentions'
 import { useAuthStore } from './authStore'
 import { useNotificationStore, type InAppNotification } from './notificationStore'
@@ -45,6 +45,104 @@ const ensureChannelKey = async (
         return channelKey
     }
 }
+
+export interface ResolvedAttachment {
+    url: string
+    name: string
+    type: string
+}
+
+interface AttachmentLike {
+    id: string
+    fileUrl?: string | null
+    fileName?: string | null
+    fileType?: string | null
+    fileIv?: string | null
+    cipherIv?: string | null
+    isEncrypted?: number | boolean
+}
+
+interface AttachmentContext {
+    channelId?: string | null
+    recipientId?: string | null
+    groupChatId?: string | null
+}
+
+const attachmentCache = new Map<string, ResolvedAttachment>()
+
+const buildLegacyFileUrl = (fileUrl: string) => {
+    if (!fileUrl.startsWith('/api/messages/file/')) return fileUrl
+    const token = useAuthStore.getState().token
+    if (!token) return fileUrl
+    const joiner = fileUrl.includes('?') ? '&' : '?'
+    return `${fileUrl}${joiner}token=${encodeURIComponent(token)}`
+}
+
+// Fetches an encrypted attachment's ciphertext, decrypts its metadata
+// (filename/mimetype) and body using the same per-conversation key text
+// messages already use, and returns a Blob object URL ready to render.
+// Legacy (pre-mandatory-encryption) attachments pass through unchanged.
+export const resolveAttachment = async (
+    item: AttachmentLike,
+    context: AttachmentContext = {},
+): Promise<ResolvedAttachment> => {
+    if (!item.fileUrl) {
+        throw new Error('Attachment has no file')
+    }
+
+    if (!item.isEncrypted) {
+        return {
+            url: buildLegacyFileUrl(item.fileUrl),
+            name: item.fileName || 'File',
+            type: item.fileType || '',
+        }
+    }
+
+    const cached = attachmentCache.get(item.id)
+    if (cached) {
+        return cached
+    }
+
+    const { e2eePrivateKey, user } = useAuthStore.getState()
+    if (!e2eePrivateKey || !user) {
+        throw new Error('End-to-end encryption is not ready yet')
+    }
+
+    const channelId = context.channelId
+    const groupChatId = context.groupChatId
+    const recipientId = context.recipientId
+
+    let key: CryptoKey
+    if (channelId) {
+        key = await ensureChannelKey(String(channelId), e2eePrivateKey, String(user.id), useChatStore.getState().socket)
+    } else if (groupChatId) {
+        key = await getGroupKey(String(groupChatId), e2eePrivateKey)
+    } else if (recipientId) {
+        key = await getSharedKey(e2eePrivateKey, String(recipientId))
+    } else {
+        throw new Error('Unable to determine encryption key for this attachment')
+    }
+
+    if (!item.fileIv || !item.cipherIv || !item.fileName) {
+        throw new Error('Attachment is missing encryption metadata')
+    }
+
+    const metaJson = await decryptMessage(item.fileName, item.cipherIv, key)
+    const meta = JSON.parse(metaJson) as { name: string; type: string }
+
+    const response = await axios.get(item.fileUrl, { responseType: 'arraybuffer' })
+    const plaintext = await decryptBytes(response.data as ArrayBuffer, item.fileIv, key)
+
+    const blob = new Blob([plaintext], { type: meta.type || 'application/octet-stream' })
+    const resolved: ResolvedAttachment = {
+        url: URL.createObjectURL(blob),
+        name: meta.name,
+        type: meta.type,
+    }
+    attachmentCache.set(item.id, resolved)
+    return resolved
+}
+
 const IDLE_THRESHOLD_MS = 5 * 60 * 1000
 
 let idleTimer: number | null = null
@@ -102,6 +200,7 @@ export interface Message {
     fileUrl?: string | null
     fileName?: string | null
     fileType?: string | null
+    fileIv?: string | null
     mentions?: MessageMention[]
     replyToMessageId?: string | null
     threadRootMessageId?: string | null
@@ -201,6 +300,9 @@ interface SharedFileItem {
     fileUrl: string
     fileName: string
     fileType: string
+    fileIv?: string | null
+    cipherIv?: string | null
+    isEncrypted?: number | boolean
     timestamp: string
     senderName: string
     senderAvatar?: string
@@ -815,8 +917,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         if (file) {
             try {
+                const { e2eePrivateKey, user } = useAuthStore.getState()
+                if (!e2eePrivateKey || !user) {
+                    useNotificationStore.getState().addToast({
+                        id: `e2ee-error-${Date.now()}`,
+                        title: 'File not sent',
+                        body: 'End-to-end encryption is not ready yet. Please try again in a moment.',
+                    })
+                    return false
+                }
+
+                let fileKey: CryptoKey
+                if (channelId) {
+                    fileKey = await ensureChannelKey(String(channelId), e2eePrivateKey, String(user.id), socket)
+                } else if (groupChatId) {
+                    fileKey = await getGroupKey(String(groupChatId), e2eePrivateKey)
+                } else if (recipientId) {
+                    fileKey = await getSharedKey(e2eePrivateKey, String(recipientId))
+                } else {
+                    return false
+                }
+
+                const fileBytes = await file.arrayBuffer()
+                const encryptedBody = await encryptBytes(fileBytes, fileKey)
+                const encryptedMeta = await encryptMessage(
+                    JSON.stringify({ name: file.name, type: file.type }),
+                    fileKey,
+                )
+
                 const formData = new FormData()
-                formData.append('file', file)
+                formData.append('file', new Blob([encryptedBody.cipher], { type: 'application/octet-stream' }), 'encrypted.bin')
+                formData.append('fileIv', encryptedBody.iv)
+                formData.append('encryptedFileMeta', encryptedMeta.cipherText)
+                formData.append('fileMetaIv', encryptedMeta.iv)
+                formData.append('isEncrypted', 'true')
                 if (content) formData.append('content', content)
                 if (channelId) formData.append('channelId', channelId)
                 if (recipientId) formData.append('recipientId', recipientId)
@@ -829,6 +963,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 return true
             } catch (error) {
                 console.error('File upload failed:', error)
+                useNotificationStore.getState().addToast({
+                    id: `e2ee-error-${Date.now()}`,
+                    title: 'File not sent',
+                    body: 'Failed to encrypt and upload this file. Please try again.',
+                })
                 return false
             }
         } else {

@@ -61,10 +61,11 @@ export const createMessage = (
 	threadRootMessageId = null,
 	groupChatId = null,
 	expiresAt = null,
+	fileIv = null,
 ) => {
 	const stmt = db.prepare(`
-    INSERT INTO messages (content, senderId, channelId, recipientId, groupChatId, replyToMessageId, threadRootMessageId, fileUrl, fileName, fileType, filePath, cipherText, cipherIv, isEncrypted, expiresAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (content, senderId, channelId, recipientId, groupChatId, replyToMessageId, threadRootMessageId, fileUrl, fileName, fileType, filePath, cipherText, cipherIv, isEncrypted, expiresAt, fileIv)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 	const result = stmt.run(
 		content,
@@ -82,6 +83,7 @@ export const createMessage = (
 		cipherIv,
 		isEncrypted,
 		expiresAt,
+		fileIv,
 	);
 	return result.lastInsertRowid;
 };
@@ -378,7 +380,7 @@ export const getReplyContextByMessageId = (messageId) =>
 
 export const getMessageFileById = (messageId) => {
 	const stmt = db.prepare(
-		`SELECT id, senderId, channelId, recipientId, fileUrl, fileName, fileType, filePath, createdAt
+		`SELECT id, senderId, channelId, recipientId, groupChatId, fileUrl, fileName, fileType, filePath, createdAt
      FROM messages
      WHERE id = ?`,
 	);
@@ -639,7 +641,7 @@ export const getPinnedMessages = (channelId, recipientId, currentUserId, groupCh
 
 export const getChannelFiles = (channelId, limit = 200) => {
 	const stmt = db.prepare(
-		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.createdAt,
+		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.fileIv, m.cipherIv, m.isEncrypted, m.createdAt,
             u.username as senderUsername, u.avatar as senderAvatar
      FROM messages m
      JOIN users u ON m.senderId = u.id
@@ -652,7 +654,7 @@ export const getChannelFiles = (channelId, limit = 200) => {
 
 export const getDirectFiles = (userId1, userId2, limit = 200) => {
 	const stmt = db.prepare(
-		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.createdAt,
+		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.fileIv, m.cipherIv, m.isEncrypted, m.createdAt,
             u.username as senderUsername, u.avatar as senderAvatar
      FROM messages m
      JOIN users u ON m.senderId = u.id

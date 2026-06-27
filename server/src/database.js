@@ -457,6 +457,10 @@ if (!messageColumns.includes('expiresAt')) {
 	db.prepare('ALTER TABLE messages ADD COLUMN expiresAt DATETIME').run();
 }
 
+if (!messageColumns.includes('fileIv')) {
+	db.prepare('ALTER TABLE messages ADD COLUMN fileIv TEXT').run();
+}
+
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_expires_at ON messages(expiresAt);
 
