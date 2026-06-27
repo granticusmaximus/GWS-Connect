@@ -151,6 +151,12 @@ export const getChannelKeyForUser = (channelId, userId) => {
 		.get(channelId, userId);
 };
 
+export const channelHasAnyKey = (channelId) => {
+	return !!db
+		.prepare('SELECT 1 FROM channel_keys WHERE channelId = ? LIMIT 1')
+		.get(channelId);
+};
+
 export const getChannelMembers = (channelId) => {
 	const stmt = db.prepare(`
     SELECT u.id, u.username, u.avatar

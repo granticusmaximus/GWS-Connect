@@ -6,6 +6,7 @@ import {
 	findChannelById,
 	addChannelMember,
 	canAccessChannel,
+	channelHasAnyKey,
 	findVisibleChannelsForUser,
 	getChannelKeyForUser,
 	getChannelRoster,
@@ -34,6 +35,16 @@ router.post('/', authenticateToken, async (req, res) => {
 		const userRole = getUserRole(req.user.id);
 		const privacyValue = isPrivate ? 1 : 0;
 
+		// All channels are E2EE, regardless of public/private visibility - the
+		// creator wraps the channel key for themselves immediately; later
+		// members receive it from an online member when they join (see
+		// 'channel-key-needed').
+		if (!wrappedKey || !wrappedIv) {
+			return res
+				.status(400)
+				.json({ message: 'wrappedKey and wrappedIv are required' });
+		}
+
 		// Admins can create approved channels immediately
 		const status = userRole === 'admin' ? 'approved' : 'pending';
 
@@ -48,14 +59,9 @@ router.post('/', authenticateToken, async (req, res) => {
 		const channel = findChannelById(channelId);
 		channel.status = status;
 
-		// Private channels are E2EE: the creator wraps the channel key for
-		// themselves immediately; later members receive it from an online
-		// member when they join (see 'channel-key-needed').
-		if (privacyValue && wrappedKey && wrappedIv) {
-			upsertChannelKeys(channelId, [
-				{ userId: req.user.id, wrappedKey: String(wrappedKey), wrappedIv: String(wrappedIv), wrappedByUserId: req.user.id },
-			]);
-		}
+		upsertChannelKeys(channelId, [
+			{ userId: req.user.id, wrappedKey: String(wrappedKey), wrappedIv: String(wrappedIv), wrappedByUserId: req.user.id },
+		]);
 
 		const message =
 			status === 'approved'
@@ -90,13 +96,13 @@ router.post('/:channelId/join', authenticateToken, async (req, res) => {
 
 		addChannelMember(req.params.channelId, req.user.id);
 
-		if (access.channel.isPrivate) {
-			const io = req.app.get('io');
-			io.to(`channel:${req.params.channelId}`).emit('channel-key-needed', {
-				channelId: String(req.params.channelId),
-				userId: String(req.user.id),
-			});
-		}
+		// Every channel is E2EE now, so every new joiner needs a key from an
+		// online member regardless of the channel's visibility setting.
+		const io = req.app.get('io');
+		io.to(`channel:${req.params.channelId}`).emit('channel-key-needed', {
+			channelId: String(req.params.channelId),
+			userId: String(req.user.id),
+		});
 
 		res.json(access.channel);
 	} catch (error) {
@@ -116,7 +122,10 @@ router.get('/:channelId/keys/me', authenticateToken, async (req, res) => {
 
 		const key = getChannelKeyForUser(req.params.channelId, req.user.id);
 		if (!key) {
-			return res.status(404).json({ message: 'Encryption key not yet available' });
+			return res.status(404).json({
+				message: 'Encryption key not yet available',
+				hasAnyKey: channelHasAnyKey(req.params.channelId),
+			});
 		}
 
 		res.json(key);

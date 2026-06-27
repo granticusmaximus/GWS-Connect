@@ -10,6 +10,41 @@ const ACTIVE_CHAT_STORAGE_KEY = 'gws-connect.active-chat'
 const TYPING_INDICATOR_TIMEOUT_MS = 3200
 
 const typingIndicatorTimeouts = new Map<string, number>()
+
+// Fetches a member's wrapped channel key, bootstrapping a brand-new key if the
+// channel has never had one (e.g. a pre-existing channel from before E2EE was
+// made mandatory for every channel), or asking online peers to grant it if a
+// key exists but this member doesn't have their copy yet.
+const ensureChannelKey = async (
+    channelId: string,
+    privateKey: CryptoKey,
+    userId: string,
+    socket: Socket | null,
+) => {
+    try {
+        return await getChannelKey(channelId, privateKey)
+    } catch (error) {
+        const axiosError = error as { response?: { status?: number; data?: { hasAnyKey?: boolean } } }
+        if (axiosError.response?.status !== 404) {
+            throw error
+        }
+
+        if (axiosError.response.data?.hasAnyKey) {
+            socket?.emit('request-channel-key', channelId)
+            throw new Error('Encryption key requested - please try sending again shortly.')
+        }
+
+        const channelKey = await generateGroupKey()
+        const wrapped = await wrapGroupKeyForMember(channelKey, privateKey, userId)
+        await axios.post(`${API_URL}/channels/${channelId}/keys`, {
+            userId,
+            wrappedKey: wrapped.wrappedKey,
+            wrappedIv: wrapped.wrappedIv,
+        })
+        cacheChannelKey(channelId, channelKey)
+        return channelKey
+    }
+}
 const IDLE_THRESHOLD_MS = 5 * 60 * 1000
 
 let idleTimer: number | null = null
@@ -814,11 +849,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 replyToMessageId,
             }
 
-            const isPrivateChannel = channelId
-                ? !!get().channels.find((channel) => channel.id === String(channelId))?.isPrivate
-                : false
-
-            if (channelId && isPrivateChannel) {
+            if (channelId) {
                 const { e2eePrivateKey, user } = useAuthStore.getState()
 
                 if (!e2eePrivateKey || !user) {
@@ -831,7 +862,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 }
 
                 try {
-                    const channelKey = await getChannelKey(String(channelId), e2eePrivateKey)
+                    const channelKey = await ensureChannelKey(String(channelId), e2eePrivateKey, String(user.id), get().socket)
                     const encrypted = await encryptMessage(content, channelKey)
 
                     payload = {
@@ -844,10 +875,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     }
                 } catch (error) {
                     console.error('Channel encryption failed:', error)
+                    const message = error instanceof Error ? error.message : ''
                     useNotificationStore.getState().addToast({
                         id: `e2ee-error-${Date.now()}`,
                         title: 'Message not sent',
-                        body: 'Failed to encrypt this message. Please try again.',
+                        body: message.includes('Encryption key requested')
+                            ? message
+                            : 'Failed to encrypt this message. Please try again.',
                     })
                     return false
                 }
@@ -1407,32 +1441,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     createChannel: async (name, description, isPrivate) => {
         try {
-            let wrappedKey: string | undefined
-            let wrappedIv: string | undefined
-
-            if (isPrivate) {
-                const { e2eePrivateKey, user } = useAuthStore.getState()
-                if (!e2eePrivateKey || !user) {
-                    return { ok: false, message: 'End-to-end encryption is not ready yet. Please try again in a moment.' }
-                }
-
-                const channelKey = await generateGroupKey()
-                const wrapped = await wrapGroupKeyForMember(channelKey, e2eePrivateKey, String(user.id))
-                wrappedKey = wrapped.wrappedKey
-                wrappedIv = wrapped.wrappedIv
-
-                const response = await axios.post(`${API_URL}/channels`, {
-                    name,
-                    description,
-                    isPrivate,
-                    wrappedKey,
-                    wrappedIv,
-                })
-                cacheChannelKey(String(response.data.channel.id), channelKey)
-                return { ok: true }
+            // Every channel is E2EE regardless of public/private visibility - the
+            // creator always wraps a fresh channel key for themselves.
+            const { e2eePrivateKey, user } = useAuthStore.getState()
+            if (!e2eePrivateKey || !user) {
+                return { ok: false, message: 'End-to-end encryption is not ready yet. Please try again in a moment.' }
             }
 
-            await axios.post(`${API_URL}/channels`, { name, description, isPrivate })
+            const channelKey = await generateGroupKey()
+            const { wrappedKey, wrappedIv } = await wrapGroupKeyForMember(channelKey, e2eePrivateKey, String(user.id))
+
+            const response = await axios.post(`${API_URL}/channels`, {
+                name,
+                description,
+                isPrivate,
+                wrappedKey,
+                wrappedIv,
+            })
+            cacheChannelKey(String(response.data.channel.id), channelKey)
             return { ok: true }
         } catch (error) {
             console.error('Error creating channel:', error)
@@ -1960,7 +1986,12 @@ const processIncomingMessage = async (message: Message) => {
 
     if (normalizedMessage.channelId) {
         try {
-            const channelKey = await getChannelKey(String(normalizedMessage.channelId), e2eePrivateKey)
+            const channelKey = await ensureChannelKey(
+                String(normalizedMessage.channelId),
+                e2eePrivateKey,
+                String(user.id),
+                useChatStore.getState().socket,
+            )
             const content = await decryptMessage(normalizedMessage.cipherText, normalizedMessage.cipherIv, channelKey)
             return { ...normalizedMessage, content }
         } catch (error) {

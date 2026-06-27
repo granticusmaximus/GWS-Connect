@@ -428,6 +428,21 @@ io.on('connection', async (socket) => {
 		console.log(`User ${socket.user.id} left channel ${channelId}`);
 	});
 
+	// A member who lacks their wrapped channel key (e.g. they were offline when
+	// it was distributed) asks any other online member to grant it, the same
+	// way a brand-new joiner does.
+	socket.on('request-channel-key', (channelId) => {
+		const access = resolveChannelAccess(channelId, socket.user.id);
+		if (!access.allowed) {
+			return;
+		}
+
+		io.to(`channel:${channelId}`).emit('channel-key-needed', {
+			channelId: String(channelId),
+			userId: String(socket.user.id),
+		});
+	});
+
 	socket.on('typing-start', async (data = {}) => {
 		const { channelId = null, recipientId = null, groupChatId = null } = data;
 
@@ -565,6 +580,16 @@ io.on('connection', async (socket) => {
 					callback?.({ ok: false, message: permissionCheck.reason });
 					return;
 				}
+
+				// Every channel is E2EE - never trust the client's isEncrypted claim,
+				// require real ciphertext to be present instead.
+				if (!cipherText || !cipherIv) {
+					const message =
+						'This channel requires an encryption key - please reopen the channel and try again';
+					socket.emit('message-error', { message });
+					callback?.({ ok: false, message });
+					return;
+				}
 			}
 
 			if (groupChatId) {
@@ -597,7 +622,11 @@ io.on('connection', async (socket) => {
 			// Save message to database
 			const { createMessage, syncMessageMentions, getConversationTtlSeconds, computeExpiresAt } =
 				await import('./models/Message.js');
-			const safeContent = isEncrypted ? '' : String(content || '');
+			// Channel messages are always encrypted (enforced above); for DMs and
+			// group chats the client still controls this since both are already
+			// always-encrypted by design on the client side.
+			const resolvedIsEncrypted = channelId ? true : isEncrypted;
+			const safeContent = resolvedIsEncrypted ? '' : String(content || '');
 			const ttlSeconds = getConversationTtlSeconds({
 				channelId,
 				recipientId,
@@ -616,7 +645,7 @@ io.on('connection', async (socket) => {
 				null,
 				cipherText || null,
 				cipherIv || null,
-				isEncrypted ? 1 : 0,
+				resolvedIsEncrypted ? 1 : 0,
 				replyState.replyToMessageId,
 				replyState.threadRootMessageId,
 				groupChatId || null,
@@ -641,7 +670,7 @@ io.on('connection', async (socket) => {
 				expiresAt: messageExpiresAt,
 				cipherText: cipherText || null,
 				cipherIv: cipherIv || null,
-				isEncrypted: isEncrypted ? 1 : 0,
+				isEncrypted: resolvedIsEncrypted ? 1 : 0,
 				reactions: [],
 				mentions,
 				replyToMessageId: replyState.replyToMessageId,
