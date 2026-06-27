@@ -137,6 +137,7 @@ const authRateLimiter = rateLimit({
 app.use('/api/auth/login', authRateLimiter);
 app.use('/api/auth/register', authRateLimiter);
 app.use('/api/auth/forgot-password-request', authRateLimiter);
+app.use('/api/auth/2fa/challenge', authRateLimiter);
 
 // Routes
 app.use('/api/auth', authRoutes);

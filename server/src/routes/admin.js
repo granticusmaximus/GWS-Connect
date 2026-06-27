@@ -364,6 +364,32 @@ router.post(
 	},
 );
 
+// Recovery escape hatch for a user who has lost both their authenticator and
+// backup codes - same trust tier as the password reset above.
+router.post(
+	'/users/:userId/2fa/disable',
+	authenticateToken,
+	requireAdmin,
+	async (req, res) => {
+		try {
+			const targetUser = findUserById(req.params.userId);
+			if (!targetUser) {
+				return res.status(404).json({ message: 'User not found' });
+			}
+
+			db.prepare(
+				'UPDATE users SET twoFactorEnabled = 0, twoFactorSecret = NULL, pendingTwoFactorSecret = NULL WHERE id = ?',
+			).run(targetUser.id);
+			db.prepare('DELETE FROM two_factor_backup_codes WHERE userId = ?').run(targetUser.id);
+
+			return res.json({ message: 'Two-factor authentication disabled for user' });
+		} catch (error) {
+			console.error('Admin 2FA disable error:', error);
+			return res.status(500).json({ message: 'Server error' });
+		}
+	},
+);
+
 router.post(
 	'/password-reset-requests/:requestId/resolve',
 	authenticateToken,

@@ -328,6 +328,35 @@ if (!userColumns.includes('lockedUntil')) {
 	db.prepare('ALTER TABLE users ADD COLUMN lockedUntil DATETIME').run();
 }
 
+if (!userColumns.includes('twoFactorEnabled')) {
+	db.prepare(
+		'ALTER TABLE users ADD COLUMN twoFactorEnabled INTEGER DEFAULT 0',
+	).run();
+}
+
+if (!userColumns.includes('twoFactorSecret')) {
+	db.prepare('ALTER TABLE users ADD COLUMN twoFactorSecret TEXT').run();
+}
+
+if (!userColumns.includes('pendingTwoFactorSecret')) {
+	db.prepare(
+		'ALTER TABLE users ADD COLUMN pendingTwoFactorSecret TEXT',
+	).run();
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS two_factor_backup_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId INTEGER NOT NULL,
+    codeHash TEXT NOT NULL,
+    usedAt DATETIME,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_two_factor_backup_codes_user ON two_factor_backup_codes(userId);
+`);
+
 if (!messageColumns.includes('isPinned')) {
 	db.prepare('ALTER TABLE messages ADD COLUMN isPinned INTEGER DEFAULT 0').run();
 }

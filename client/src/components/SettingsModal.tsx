@@ -1,7 +1,10 @@
 import { useState } from 'react'
+import axios from 'axios'
 import { XMarkIcon, ExclamationTriangleIcon, InformationCircleIcon } from '@heroicons/react/24/outline'
 import { usePreferencesStore } from '../store/preferencesStore'
 import { useThemeStore } from '../store/themeStore'
+import { useAuthStore } from '../store/authStore'
+import { API_URL } from '../config/runtime'
 import { subscribeToPush, unsubscribeFromPush, isIOS, isPWAInstalled, isPushNotificationSupported } from '../utils/pushNotifications'
 
 interface SettingsModalProps {
@@ -16,12 +19,88 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
   const setTimeFormat = usePreferencesStore((state) => state.setTimeFormat)
   const setDateFormat = usePreferencesStore((state) => state.setDateFormat)
   const { autoCloseSidebarOnSelect, setAutoCloseSidebar } = useThemeStore()
+  const { user } = useAuthStore()
 
   const [pushEnabled, setPushEnabled] = useState(false)
   const [pushLoading, setPushLoading] = useState(false)
   const [localTimeFormat, setLocalTimeFormat] = useState(timeFormat)
   const [localDateFormat, setLocalDateFormat] = useState(dateFormat)
   const [localAutoCloseSidebar, setLocalAutoCloseSidebar] = useState(autoCloseSidebarOnSelect)
+
+  const twoFactorEnabled = !!user?.twoFactorEnabled
+  const [twoFactorStep, setTwoFactorStep] = useState<'idle' | 'setup' | 'backup-codes' | 'disable'>('idle')
+  const [twoFactorSetupData, setTwoFactorSetupData] = useState<{ secret: string; qrCodeDataUrl: string } | null>(null)
+  const [twoFactorCode, setTwoFactorCode] = useState('')
+  const [backupCodes, setBackupCodes] = useState<string[]>([])
+  const [disablePassword, setDisablePassword] = useState('')
+  const [twoFactorLoading, setTwoFactorLoading] = useState(false)
+  const [twoFactorError, setTwoFactorError] = useState<string | null>(null)
+
+  // The dedicated /2fa/* routes are the source of truth and already updated
+  // the server - this just syncs the already-loaded client state to match,
+  // no need to round-trip through the generic profile-update endpoint.
+  const syncTwoFactorEnabled = (enabled: boolean) => {
+    useAuthStore.setState((state) => {
+      if (!state.user) return state
+      const updatedUser = { ...state.user, twoFactorEnabled: enabled ? 1 : 0 }
+      localStorage.setItem('user', JSON.stringify(updatedUser))
+      return { user: updatedUser }
+    })
+  }
+
+  const startTwoFactorSetup = async () => {
+    setTwoFactorLoading(true)
+    setTwoFactorError(null)
+    try {
+      const response = await axios.post(`${API_URL}/auth/2fa/setup`)
+      setTwoFactorSetupData(response.data)
+      setTwoFactorStep('setup')
+    } catch (error) {
+      console.error('2FA setup error:', error)
+      setTwoFactorError('Failed to start two-factor setup. Please try again.')
+    } finally {
+      setTwoFactorLoading(false)
+    }
+  }
+
+  const confirmTwoFactorSetup = async () => {
+    setTwoFactorLoading(true)
+    setTwoFactorError(null)
+    try {
+      const response = await axios.post(`${API_URL}/auth/2fa/verify-setup`, { code: twoFactorCode })
+      setBackupCodes(response.data.backupCodes)
+      setTwoFactorStep('backup-codes')
+      setTwoFactorCode('')
+      syncTwoFactorEnabled(true)
+    } catch (error) {
+      console.error('2FA verify-setup error:', error)
+      setTwoFactorError('Invalid code. Please check your authenticator app and try again.')
+    } finally {
+      setTwoFactorLoading(false)
+    }
+  }
+
+  const finishTwoFactorSetup = () => {
+    setTwoFactorStep('idle')
+    setTwoFactorSetupData(null)
+    setBackupCodes([])
+  }
+
+  const disableTwoFactor = async () => {
+    setTwoFactorLoading(true)
+    setTwoFactorError(null)
+    try {
+      await axios.post(`${API_URL}/auth/2fa/disable`, { currentPassword: disablePassword })
+      syncTwoFactorEnabled(false)
+      setTwoFactorStep('idle')
+      setDisablePassword('')
+    } catch (error) {
+      console.error('2FA disable error:', error)
+      setTwoFactorError('Incorrect password. Please try again.')
+    } finally {
+      setTwoFactorLoading(false)
+    }
+  }
 
   const enablePush = async () => {
     if (!('Notification' in window)) {
@@ -248,6 +327,140 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
               </p>
             </div>
           )}
+
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">Two-factor authentication</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {twoFactorEnabled
+                    ? 'Enabled - your account requires an authenticator code at login.'
+                    : 'Add an authenticator app code as a second login step.'}
+                </p>
+              </div>
+              {twoFactorStep === 'idle' && (
+                twoFactorEnabled ? (
+                  <button
+                    type="button"
+                    onClick={() => { setTwoFactorStep('disable'); setTwoFactorError(null) }}
+                    className="rounded-lg border border-red-300 dark:border-red-900/50 px-3 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors min-h-10"
+                  >
+                    Disable
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startTwoFactorSetup}
+                    disabled={twoFactorLoading}
+                    className="rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white hover:bg-primary-700 transition-colors min-h-10 disabled:opacity-60"
+                  >
+                    {twoFactorLoading ? 'Starting...' : 'Enable'}
+                  </button>
+                )
+              )}
+            </div>
+
+            {twoFactorError && (
+              <div className="mt-3 rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-600 dark:text-red-400">
+                {twoFactorError}
+              </div>
+            )}
+
+            {twoFactorStep === 'setup' && twoFactorSetupData && (
+              <div className="mt-4 space-y-3">
+                <p className="text-sm text-gray-700 dark:text-gray-300">
+                  Scan this code with your authenticator app (Google Authenticator, Authy, etc.), or enter the secret manually.
+                </p>
+                <img
+                  src={twoFactorSetupData.qrCodeDataUrl}
+                  alt="Two-factor authentication QR code"
+                  className="rounded-lg border border-gray-200 dark:border-gray-700 w-40 h-40"
+                />
+                <p className="font-mono text-xs break-all text-gray-600 dark:text-gray-400">
+                  {twoFactorSetupData.secret}
+                </p>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={twoFactorCode}
+                  onChange={(e) => setTwoFactorCode(e.target.value)}
+                  placeholder="Enter 6-digit code"
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setTwoFactorStep('idle'); setTwoFactorSetupData(null); setTwoFactorCode('') }}
+                    className="rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 min-h-10"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmTwoFactorSetup}
+                    disabled={twoFactorLoading || !twoFactorCode}
+                    className="rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white hover:bg-primary-700 min-h-10 disabled:opacity-60"
+                  >
+                    {twoFactorLoading ? 'Verifying...' : 'Confirm'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {twoFactorStep === 'backup-codes' && (
+              <div className="mt-4 space-y-3">
+                <div className="flex gap-3 rounded-lg border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/20 p-3">
+                  <ExclamationTriangleIcon className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-amber-700 dark:text-amber-300">
+                    Save these backup codes somewhere safe. Each one can be used once to log in if you lose access to your authenticator app. You won't see them again.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-3 font-mono text-sm text-gray-900 dark:text-white">
+                  {backupCodes.map((backupCode) => (
+                    <span key={backupCode}>{backupCode}</span>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={finishTwoFactorSetup}
+                  className="w-full rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white hover:bg-primary-700 min-h-10"
+                >
+                  I've saved these codes
+                </button>
+              </div>
+            )}
+
+            {twoFactorStep === 'disable' && (
+              <div className="mt-4 space-y-3">
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={disablePassword}
+                  onChange={(e) => setDisablePassword(e.target.value)}
+                  placeholder="Current password"
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setTwoFactorStep('idle'); setDisablePassword('') }}
+                    className="rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 min-h-10"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={disableTwoFactor}
+                    disabled={twoFactorLoading || !disablePassword}
+                    className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 min-h-10 disabled:opacity-60"
+                  >
+                    {twoFactorLoading ? 'Disabling...' : 'Disable two-factor authentication'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sticky bottom-0 bg-white dark:bg-gray-900 -m-6 mt-6 p-6 pt-4 border-t border-gray-200 dark:border-gray-700 pointer-events-auto">

@@ -1,6 +1,9 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import { generateSecret, generate, verify, generateURI } from 'otplib';
+import QRCode from 'qrcode';
 import { body, validationResult } from 'express-validator';
 import db from '../database.js';
 import {
@@ -17,6 +20,89 @@ const getJwtSecret = () => {
 		throw new Error('JWT_SECRET environment variable is required');
 	}
 	return secret;
+};
+
+// Short-lived, server-side-only record of "this user proved their password,
+// now waiting on a second factor." Deliberately an opaque random ID rather
+// than a JWT - a JWT signed with the normal secret would pass
+// authenticateToken as a real bearer token regardless of any custom claim,
+// which would make this a privilege-escalation bug if any other route ever
+// forgot to check that claim. An opaque ID has no such risk.
+const TWO_FACTOR_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const twoFactorChallenges = new Map();
+
+const createTwoFactorChallenge = (userId) => {
+	const challengeId = crypto.randomBytes(32).toString('hex');
+	twoFactorChallenges.set(challengeId, {
+		userId,
+		expiresAt: Date.now() + TWO_FACTOR_CHALLENGE_TTL_MS,
+	});
+	return challengeId;
+};
+
+const consumeTwoFactorChallenge = (challengeId) => {
+	const challenge = twoFactorChallenges.get(challengeId);
+	if (!challenge) {
+		return null;
+	}
+	twoFactorChallenges.delete(challengeId);
+	if (challenge.expiresAt < Date.now()) {
+		return null;
+	}
+	return challenge;
+};
+
+const buildLoginResponse = (user) => {
+	user.interests = JSON.parse(user.interests || '[]');
+	user.socialLinks = JSON.parse(user.socialLinks || '{}');
+	user.contactInfo = JSON.parse(user.contactInfo || '{}');
+	if (user.e2eePublicKey && typeof user.e2eePublicKey === 'string') {
+		user.e2eePublicKey = JSON.parse(user.e2eePublicKey);
+	}
+
+	const token = jwt.sign(
+		{
+			id: user.id,
+			username: user.username,
+			email: user.email,
+			role: user.role || 'user',
+		},
+		getJwtSecret(),
+		{ expiresIn: '7d' },
+	);
+
+	return {
+		token,
+		user: {
+			id: user.id,
+			username: user.username,
+			email: user.email,
+			e2eePublicKey: user.e2eePublicKey,
+			e2eeEncryptedPrivateKey: user.e2eeEncryptedPrivateKey,
+			e2eeSalt: user.e2eeSalt,
+			e2eeIv: user.e2eeIv,
+			theme: user.theme || 'light',
+			avatar: user.avatar,
+			banner: user.banner,
+			bio: user.bio,
+			interests: user.interests,
+			socialLinks: user.socialLinks,
+			contactInfo: user.contactInfo,
+			role: user.role || 'user',
+			mustChangePassword: user.mustChangePassword || 0,
+			twoFactorEnabled: user.twoFactorEnabled ? 1 : 0,
+		},
+	};
+};
+
+const generateBackupCodes = (count = 8) => {
+	const codes = [];
+	for (let i = 0; i < count; i += 1) {
+		const part1 = crypto.randomBytes(3).toString('hex').toUpperCase();
+		const part2 = crypto.randomBytes(3).toString('hex').toUpperCase();
+		codes.push(`${part1}-${part2}`);
+	}
+	return codes;
 };
 
 // Register
@@ -171,53 +257,176 @@ router.post(
 				).run(user.id);
 			}
 
-			// Parse JSON fields
-			user.interests = JSON.parse(user.interests || '[]');
-			user.socialLinks = JSON.parse(user.socialLinks || '{}');
-			user.contactInfo = JSON.parse(user.contactInfo || '{}');
-			if (user.e2eePublicKey) {
-				user.e2eePublicKey = JSON.parse(user.e2eePublicKey);
+			if (user.twoFactorEnabled) {
+				const challengeId = createTwoFactorChallenge(user.id);
+				return res.json({ requiresTwoFactor: true, challengeId });
 			}
 
-			// Create token
-			const token = jwt.sign(
-				{
-					id: user.id,
-					username: user.username,
-					email: user.email,
-					role: user.role || 'user',
-				},
-				getJwtSecret(),
-				{ expiresIn: '7d' },
-			);
-
-			res.json({
-				token,
-				user: {
-					id: user.id,
-					username: user.username,
-					email: user.email,
-					e2eePublicKey: user.e2eePublicKey,
-					e2eeEncryptedPrivateKey: user.e2eeEncryptedPrivateKey,
-					e2eeSalt: user.e2eeSalt,
-					e2eeIv: user.e2eeIv,
-					theme: user.theme || 'light',
-					avatar: user.avatar,
-					banner: user.banner,
-					bio: user.bio,
-					interests: user.interests,
-					socialLinks: user.socialLinks,
-					contactInfo: user.contactInfo,
-					role: user.role || 'user',
-					mustChangePassword: user.mustChangePassword || 0,
-				},
-			});
+			res.json(buildLoginResponse(user));
 		} catch (error) {
 			console.error('Login error:', error);
 			res.status(500).json({ message: 'Server error' });
 		}
 	},
 );
+
+router.post(
+	'/2fa/challenge',
+	[
+		body('challengeId').notEmpty().withMessage('challengeId is required'),
+		body('code').notEmpty().withMessage('code is required'),
+	],
+	async (req, res) => {
+		const errors = validationResult(req);
+		if (!errors.isEmpty()) {
+			return res.status(400).json({ errors: errors.array() });
+		}
+
+		try {
+			const { challengeId, code } = req.body;
+			const challenge = consumeTwoFactorChallenge(challengeId);
+			if (!challenge) {
+				return res.status(400).json({ message: 'Invalid or expired login session, please log in again' });
+			}
+
+			const user = db
+				.prepare('SELECT * FROM users WHERE id = ?')
+				.get(challenge.userId);
+			if (!user || !user.twoFactorEnabled) {
+				return res.status(400).json({ message: 'Invalid or expired login session, please log in again' });
+			}
+
+			const normalizedCode = String(code).trim();
+			// verify() throws on malformed input (e.g. a backup code's length)
+			// rather than returning { valid: false } - a backup code is a valid
+			// thing to submit here, just not a valid TOTP, so treat any throw
+			// as "not a valid TOTP" and fall through to the backup-code check.
+			const totpResult = await verify({ secret: user.twoFactorSecret, token: normalizedCode }).catch(() => ({ valid: false }));
+
+			if (totpResult.valid) {
+				return res.json(buildLoginResponse(user));
+			}
+
+			// Not a valid TOTP code - check unused backup codes.
+			const backupCodes = db
+				.prepare(
+					'SELECT id, codeHash FROM two_factor_backup_codes WHERE userId = ? AND usedAt IS NULL',
+				)
+				.all(user.id);
+
+			for (const backupCode of backupCodes) {
+				if (await bcrypt.compare(normalizedCode, backupCode.codeHash)) {
+					db.prepare(
+						'UPDATE two_factor_backup_codes SET usedAt = CURRENT_TIMESTAMP WHERE id = ?',
+					).run(backupCode.id);
+					return res.json(buildLoginResponse(user));
+				}
+			}
+
+			res.status(400).json({ message: 'Invalid authentication code' });
+		} catch (error) {
+			console.error('2FA challenge error:', error);
+			res.status(500).json({ message: 'Server error' });
+		}
+	},
+);
+
+router.post('/2fa/setup', authenticateToken, async (req, res) => {
+	try {
+		const user = db
+			.prepare('SELECT id, email FROM users WHERE id = ?')
+			.get(req.user.id);
+		if (!user) {
+			return res.status(404).json({ message: 'User not found' });
+		}
+
+		const secret = generateSecret();
+		db.prepare('UPDATE users SET pendingTwoFactorSecret = ? WHERE id = ?').run(
+			secret,
+			user.id,
+		);
+
+		const uri = generateURI({ issuer: 'GWS Connect', label: user.email, secret });
+		const qrCodeDataUrl = await QRCode.toDataURL(uri);
+
+		res.json({ secret, qrCodeDataUrl });
+	} catch (error) {
+		console.error('2FA setup error:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.post('/2fa/verify-setup', authenticateToken, async (req, res) => {
+	try {
+		const { code } = req.body;
+		if (!code) {
+			return res.status(400).json({ message: 'code is required' });
+		}
+
+		const user = db
+			.prepare('SELECT id, pendingTwoFactorSecret FROM users WHERE id = ?')
+			.get(req.user.id);
+		if (!user || !user.pendingTwoFactorSecret) {
+			return res.status(400).json({ message: 'No two-factor setup in progress' });
+		}
+
+		const result = await verify({ secret: user.pendingTwoFactorSecret, token: String(code).trim() }).catch(() => ({ valid: false }));
+		if (!result.valid) {
+			return res.status(400).json({ message: 'Invalid authentication code' });
+		}
+
+		db.prepare('DELETE FROM two_factor_backup_codes WHERE userId = ?').run(user.id);
+
+		const backupCodes = generateBackupCodes();
+		const insertBackupCode = db.prepare(
+			'INSERT INTO two_factor_backup_codes (userId, codeHash) VALUES (?, ?)',
+		);
+		for (const backupCode of backupCodes) {
+			const hash = await bcrypt.hash(backupCode, 10);
+			insertBackupCode.run(user.id, hash);
+		}
+
+		db.prepare(
+			'UPDATE users SET twoFactorEnabled = 1, twoFactorSecret = ?, pendingTwoFactorSecret = NULL WHERE id = ?',
+		).run(user.pendingTwoFactorSecret, user.id);
+
+		res.json({ message: 'Two-factor authentication enabled', backupCodes });
+	} catch (error) {
+		console.error('2FA verify-setup error:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.post('/2fa/disable', authenticateToken, async (req, res) => {
+	try {
+		const { currentPassword } = req.body;
+		if (!currentPassword) {
+			return res.status(400).json({ message: 'Current password required' });
+		}
+
+		const user = db
+			.prepare('SELECT id, password FROM users WHERE id = ?')
+			.get(req.user.id);
+		if (!user) {
+			return res.status(404).json({ message: 'User not found' });
+		}
+
+		const isMatch = await bcrypt.compare(currentPassword, user.password);
+		if (!isMatch) {
+			return res.status(400).json({ message: 'Invalid current password' });
+		}
+
+		db.prepare(
+			'UPDATE users SET twoFactorEnabled = 0, twoFactorSecret = NULL, pendingTwoFactorSecret = NULL WHERE id = ?',
+		).run(user.id);
+		db.prepare('DELETE FROM two_factor_backup_codes WHERE userId = ?').run(user.id);
+
+		res.json({ message: 'Two-factor authentication disabled' });
+	} catch (error) {
+		console.error('2FA disable error:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
 
 router.post(
 	'/forgot-password-request',

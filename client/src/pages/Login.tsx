@@ -7,6 +7,7 @@ import { useAuthStore } from '../store/authStore'
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [twoFactorCode, setTwoFactorCode] = useState('')
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false)
   const [forgotPasswordEmail, setForgotPasswordEmail] = useState('')
   const [forgotPasswordLoading, setForgotPasswordLoading] = useState(false)
@@ -14,16 +15,33 @@ export default function Login() {
     type: 'success' | 'error'
     message: string
   } | null>(null)
-  const { login, loading, error } = useAuthStore()
+  const { login, completeTwoFactorLogin, twoFactorChallengeId, loading, error } = useAuthStore()
   const navigate = useNavigate()
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     try {
       await login(email, password)
+      if (useAuthStore.getState().twoFactorChallengeId) {
+        // Server wants a second factor - stay on this page, the form below
+        // switches to the code-entry step. password is kept in local state
+        // (never re-sent except over the original login call) so the E2EE
+        // private key can still be decrypted once the second factor passes.
+        return
+      }
       navigate('/dashboard')
     } catch (err) {
       console.error('Login error:', err)
+    }
+  }
+
+  const handleTwoFactorSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    try {
+      await completeTwoFactorLogin(twoFactorCode, password)
+      navigate('/dashboard')
+    } catch (err) {
+      console.error('Two-factor login error:', err)
     }
   }
 
@@ -75,73 +93,114 @@ export default function Login() {
             Sign in to your account
           </p>
         </div>
-        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-          {error && (
-            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 px-4 py-3 rounded-lg text-sm">
-              {error}
-            </div>
-          )}
-          <div className="space-y-4">
+        {twoFactorChallengeId ? (
+          <form className="mt-8 space-y-6" onSubmit={handleTwoFactorSubmit}>
+            {error && (
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 px-4 py-3 rounded-lg text-sm">
+                {error}
+              </div>
+            )}
             <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Email address
+              <label htmlFor="twoFactorCode" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Authentication code
               </label>
+              <p className="mb-2 text-sm text-gray-600 dark:text-gray-400">
+                Enter the 6-digit code from your authenticator app, or one of your backup codes.
+              </p>
               <input
-                id="email"
-                name="email"
-                type="email"
-                autoComplete="email"
+                id="twoFactorCode"
+                name="twoFactorCode"
+                type="text"
+                inputMode="text"
+                autoComplete="one-time-code"
+                autoFocus
                 required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                value={twoFactorCode}
+                onChange={(e) => setTwoFactorCode(e.target.value)}
                 className="w-full px-4 py-3 sm:py-2 text-base sm:text-sm border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-colors"
-                placeholder="email@example.com"
+                placeholder="123456"
               />
             </div>
+
             <div>
-              <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Password
-              </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-3 sm:py-2 text-base sm:text-sm border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-colors"
-                placeholder="••••••••"
-              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full min-h-12 flex justify-center items-center py-3 sm:py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors tap-highlight-none"
+              >
+                {loading ? 'Verifying...' : 'Verify'}
+              </button>
             </div>
-          </div>
+          </form>
+        ) : (
+          <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+            {error && (
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 px-4 py-3 rounded-lg text-sm">
+                {error}
+              </div>
+            )}
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Email address
+                </label>
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-4 py-3 sm:py-2 text-base sm:text-sm border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-colors"
+                  placeholder="email@example.com"
+                />
+              </div>
+              <div>
+                <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Password
+                </label>
+                <input
+                  id="password"
+                  name="password"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-4 py-3 sm:py-2 text-base sm:text-sm border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white transition-colors"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
 
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={openForgotPasswordModal}
-              className="text-sm text-primary-600 hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300 transition-colors"
-            >
-              Forgot password?
-            </button>
-          </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={openForgotPasswordModal}
+                className="text-sm text-primary-600 hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300 transition-colors"
+              >
+                Forgot password?
+              </button>
+            </div>
 
-          <div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full min-h-12 flex justify-center items-center py-3 sm:py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors tap-highlight-none"
-            >
-              {loading ? 'Signing in...' : 'Sign in'}
-            </button>
-          </div>
+            <div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full min-h-12 flex justify-center items-center py-3 sm:py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors tap-highlight-none"
+              >
+                {loading ? 'Signing in...' : 'Sign in'}
+              </button>
+            </div>
 
-          <div className="text-center">
-            <Link to="/register" className="text-sm text-primary-600 hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300 transition-colors">
-              Don't have an account? Sign up
-            </Link>
-          </div>
-        </form>
+            <div className="text-center">
+              <Link to="/register" className="text-sm text-primary-600 hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300 transition-colors">
+                Don't have an account? Sign up
+              </Link>
+            </div>
+          </form>
+        )}
 
         {isForgotPasswordOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">

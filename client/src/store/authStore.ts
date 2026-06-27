@@ -32,6 +32,7 @@ interface User {
     bio?: string
     role?: 'user' | 'manager' | 'admin'
     mustChangePassword?: number | boolean
+    twoFactorEnabled?: number | boolean
     interests?: string[]
     socialLinks?: {
         twitter?: string
@@ -54,7 +55,9 @@ interface AuthState {
     e2eePrivateKey: CryptoKey | null
     e2eeReady: boolean
     e2eeKeyRecoveryNeeded: boolean
+    twoFactorChallengeId: string | null
     login: (email: string, password: string) => Promise<void>
+    completeTwoFactorLogin: (code: string, password: string) => Promise<void>
     changePassword: (currentPassword: string, newPassword: string) => Promise<void>
     register: (username: string, email: string, password: string) => Promise<void>
     logout: () => void
@@ -74,7 +77,53 @@ axios.interceptors.request.use(
     (error) => Promise.reject(error)
 )
 
-export const useAuthStore = create<AuthState>((set, get) => ({
+export const useAuthStore = create<AuthState>((set, get) => {
+    // Shared by login() (no 2FA) and completeTwoFactorLogin() (after the
+    // second factor passes) - both end up with the same {token, user} shape
+    // from the server and need the same E2EE bootstrap/recovery handling.
+    const completeLoginSession = async (token: string, user: User, password: string) => {
+        const normalizedUser = normalizeUserAvatar(user)
+
+        let e2eeKeyRecoveryNeeded = false
+        if (normalizedUser?.e2eeEncryptedPrivateKey && normalizedUser?.e2eeSalt && normalizedUser?.e2eeIv) {
+            try {
+                const privateKeyJwk = await decryptPrivateKeyJwk(
+                    normalizedUser.e2eeEncryptedPrivateKey,
+                    password,
+                    normalizedUser.e2eeSalt,
+                    normalizedUser.e2eeIv,
+                )
+                const privateKey = await importPrivateKey(privateKeyJwk)
+                sessionStorage.setItem('e2eePrivateKeyJwk', JSON.stringify(privateKeyJwk))
+                set({ e2eePrivateKey: privateKey, e2eeReady: true })
+            } catch {
+                // The private key is encrypted under a different password than the one
+                // just used (e.g. an admin password reset). The password itself was
+                // already verified by the server above, so this is not an auth failure -
+                // surface a recovery state instead of blocking login entirely.
+                sessionStorage.removeItem('e2eePrivateKeyJwk')
+                set({ e2eePrivateKey: null, e2eeReady: false })
+                e2eeKeyRecoveryNeeded = true
+            }
+        } else {
+            set({ e2eePrivateKey: null, e2eeReady: false })
+        }
+
+        localStorage.setItem('token', token)
+        localStorage.setItem('user', JSON.stringify(normalizedUser))
+        axios.defaults.headers.common['Authorization'] = `Bearer ${token}`
+
+        set({
+            user: normalizedUser,
+            token,
+            loading: false,
+            initialized: true,
+            e2eeKeyRecoveryNeeded,
+            twoFactorChallengeId: null,
+        })
+    }
+
+    return {
     user: null,
     token: null,
     loading: false,
@@ -83,6 +132,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     e2eePrivateKey: null,
     e2eeReady: false,
     e2eeKeyRecoveryNeeded: false,
+    twoFactorChallengeId: null,
 
     initializeAuth: () => {
         const token = localStorage.getItem('token')
@@ -125,48 +175,42 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({ loading: true, error: null })
         try {
             const response = await axios.post(`${API_URL}/auth/login`, { email, password })
-            const { token, user } = response.data
-            const normalizedUser = normalizeUserAvatar(user)
 
-            let e2eeKeyRecoveryNeeded = false
-            if (normalizedUser?.e2eeEncryptedPrivateKey && normalizedUser?.e2eeSalt && normalizedUser?.e2eeIv) {
-                try {
-                    const privateKeyJwk = await decryptPrivateKeyJwk(
-                        normalizedUser.e2eeEncryptedPrivateKey,
-                        password,
-                        normalizedUser.e2eeSalt,
-                        normalizedUser.e2eeIv,
-                    )
-                    const privateKey = await importPrivateKey(privateKeyJwk)
-                    sessionStorage.setItem('e2eePrivateKeyJwk', JSON.stringify(privateKeyJwk))
-                    set({ e2eePrivateKey: privateKey, e2eeReady: true })
-                } catch {
-                    // The private key is encrypted under a different password than the one
-                    // just used (e.g. an admin password reset). The password itself was
-                    // already verified by the server above, so this is not an auth failure -
-                    // surface a recovery state instead of blocking login entirely.
-                    sessionStorage.removeItem('e2eePrivateKeyJwk')
-                    set({ e2eePrivateKey: null, e2eeReady: false })
-                    e2eeKeyRecoveryNeeded = true
-                }
-            } else {
-                set({ e2eePrivateKey: null, e2eeReady: false })
+            if (response.data?.requiresTwoFactor) {
+                set({
+                    loading: false,
+                    twoFactorChallengeId: response.data.challengeId,
+                })
+                return
             }
 
-            localStorage.setItem('token', token)
-            localStorage.setItem('user', JSON.stringify(normalizedUser))
-            axios.defaults.headers.common['Authorization'] = `Bearer ${token}`
-
-            set({
-                user: normalizedUser,
-                token,
-                loading: false,
-                initialized: true,
-                e2eeKeyRecoveryNeeded,
-            })
+            const { token, user } = response.data
+            await completeLoginSession(token, user, password)
         } catch (error: unknown) {
             const axiosError = error as AxiosError<{ message?: string }>
             const message = axiosError.response?.data?.message || 'Login failed'
+            set({ error: message, loading: false })
+            throw error
+        }
+    },
+
+    completeTwoFactorLogin: async (code: string, password: string) => {
+        const { twoFactorChallengeId } = get()
+        if (!twoFactorChallengeId) {
+            throw new Error('No login in progress')
+        }
+
+        set({ loading: true, error: null })
+        try {
+            const response = await axios.post(`${API_URL}/auth/2fa/challenge`, {
+                challengeId: twoFactorChallengeId,
+                code,
+            })
+            const { token, user } = response.data
+            await completeLoginSession(token, user, password)
+        } catch (error: unknown) {
+            const axiosError = error as AxiosError<{ message?: string }>
+            const message = axiosError.response?.data?.message || 'Invalid authentication code'
             set({ error: message, loading: false })
             throw error
         }
@@ -220,6 +264,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             e2eePrivateKey: null,
             e2eeReady: false,
             e2eeKeyRecoveryNeeded: false,
+            twoFactorChallengeId: null,
         })
     },
 
@@ -317,4 +362,5 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             throw error
         }
     },
-}))
+    }
+})
