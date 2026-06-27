@@ -14,15 +14,18 @@ const typingIndicatorTimeouts = new Map<string, number>()
 // Fetches a member's wrapped channel key, bootstrapping a brand-new key if the
 // channel has never had one (e.g. a pre-existing channel from before E2EE was
 // made mandatory for every channel), or asking online peers to grant it if a
-// key exists but this member doesn't have their copy yet.
+// key exists but this member doesn't have their copy yet. `generation` omitted
+// means "current" (used when sending); passed explicitly when decrypting a
+// message tagged with a specific (possibly historical) generation.
 const ensureChannelKey = async (
     channelId: string,
     privateKey: CryptoKey,
     userId: string,
     socket: Socket | null,
+    generation?: number,
 ) => {
     try {
-        return await getChannelKey(channelId, privateKey)
+        return await getChannelKey(channelId, privateKey, generation)
     } catch (error) {
         const axiosError = error as { response?: { status?: number; data?: { hasAnyKey?: boolean } } }
         if (axiosError.response?.status !== 404) {
@@ -41,9 +44,80 @@ const ensureChannelKey = async (
             wrappedKey: wrapped.wrappedKey,
             wrappedIv: wrapped.wrappedIv,
         })
-        cacheChannelKey(channelId, channelKey)
+        // No generation has ever existed for this channel, so this bootstrap
+        // is always generation 1 (channels.currentKeyGeneration defaults to 1).
+        cacheChannelKey(channelId, 1, channelKey)
         return channelKey
     }
+}
+
+// Generates a fresh key, wraps it for every current member, and submits the
+// rotation. Used both when the server signals a removal-triggered rotation
+// and when a client opportunistically notices the current generation is
+// stale. A 409 (someone else already rotated to this generation) is treated
+// as a no-op, not an error - the next key fetch picks up their result.
+const performChannelKeyRotation = async (channelId: string, targetGeneration: number) => {
+    const { e2eePrivateKey } = useAuthStore.getState()
+    if (!e2eePrivateKey) {
+        return
+    }
+
+    const membersResponse = await axios.get(`${API_URL}/channels/${channelId}/members`)
+    const members: { id: string | number }[] = membersResponse.data
+    const newChannelKey = await generateGroupKey()
+    const wraps = await Promise.all(
+        members.map(async (member) => {
+            const { wrappedKey, wrappedIv } = await wrapGroupKeyForMember(newChannelKey, e2eePrivateKey, String(member.id))
+            return { userId: member.id, wrappedKey, wrappedIv }
+        }),
+    )
+
+    const response = await axios.post(`${API_URL}/channels/${channelId}/keys/rotate`, {
+        generation: targetGeneration,
+        wraps,
+    })
+    cacheChannelKey(channelId, response.data.generation, newChannelKey)
+}
+
+const performGroupKeyRotation = async (groupChatId: string, targetGeneration: number) => {
+    const { e2eePrivateKey } = useAuthStore.getState()
+    if (!e2eePrivateKey) {
+        return
+    }
+
+    const groupChat = useChatStore.getState().groupChats.find((group) => group.id === groupChatId)
+    const members = groupChat?.members || []
+    const newGroupKey = await generateGroupKey()
+    const wraps = await Promise.all(
+        members.map(async (member) => {
+            const { wrappedKey, wrappedIv } = await wrapGroupKeyForMember(newGroupKey, e2eePrivateKey, String(member.id))
+            return { userId: member.id, wrappedKey, wrappedIv }
+        }),
+    )
+
+    const response = await axios.post(`${API_URL}/group-chats/${groupChatId}/keys/rotate`, {
+        generation: targetGeneration,
+        wraps,
+    })
+    cacheGroupKey(groupChatId, response.data.generation, newGroupKey)
+}
+
+const KEY_ROTATION_STALE_MS = 24 * 60 * 60 * 1000
+
+// Opportunistically rotates a stale key when a channel/group becomes active.
+// Safe to call repeatedly/from multiple online members - the server's CAS
+// check on /keys/rotate means only one rotation per generation ever lands.
+const rotateIfStale = (kind: 'channel' | 'group', id: string, rotatedAt: string | undefined, currentGeneration: number | undefined) => {
+    const lastRotated = rotatedAt ? new Date(rotatedAt).getTime() : 0
+    if (Date.now() - lastRotated < KEY_ROTATION_STALE_MS) {
+        return
+    }
+
+    const targetGeneration = (currentGeneration || 1) + 1
+    const rotate = kind === 'channel' ? performChannelKeyRotation(id, targetGeneration) : performGroupKeyRotation(id, targetGeneration)
+    rotate.catch((error) => {
+        console.error(`Failed to opportunistically rotate ${kind} key:`, error)
+    })
 }
 
 export interface ResolvedAttachment {
@@ -60,6 +134,7 @@ interface AttachmentLike {
     fileIv?: string | null
     cipherIv?: string | null
     isEncrypted?: number | boolean
+    keyGeneration?: number | null
 }
 
 interface AttachmentContext {
@@ -112,11 +187,13 @@ export const resolveAttachment = async (
     const groupChatId = context.groupChatId
     const recipientId = context.recipientId
 
+    const generation = item.keyGeneration ?? undefined
+
     let key: CryptoKey
     if (channelId) {
-        key = await ensureChannelKey(String(channelId), e2eePrivateKey, String(user.id), useChatStore.getState().socket)
+        key = await ensureChannelKey(String(channelId), e2eePrivateKey, String(user.id), useChatStore.getState().socket, generation)
     } else if (groupChatId) {
-        key = await getGroupKey(String(groupChatId), e2eePrivateKey)
+        key = await getGroupKey(String(groupChatId), e2eePrivateKey, generation)
     } else if (recipientId) {
         key = await getSharedKey(e2eePrivateKey, String(recipientId))
     } else {
@@ -193,6 +270,7 @@ export interface Message {
     cipherText?: string | null
     cipherIv?: string | null
     isEncrypted?: number | boolean
+    keyGeneration?: number | null
     timestamp: Date
     editedAt?: string | null
     isDeleted?: number | boolean
@@ -247,6 +325,8 @@ export interface Channel {
     lastMessageAt: string | null
     slowModeSeconds?: number
     disappearingMessagesSeconds?: number
+    currentKeyGeneration?: number
+    keyGenerationRotatedAt?: string
 }
 
 export interface DirectMessage {
@@ -271,6 +351,8 @@ export interface GroupChat {
     lastMessageAt: string | null
     unreadCount: number
     disappearingMessagesSeconds?: number
+    currentKeyGeneration?: number
+    keyGenerationRotatedAt?: string
 }
 
 export interface TypingUser {
@@ -303,6 +385,7 @@ interface SharedFileItem {
     fileIv?: string | null
     cipherIv?: string | null
     isEncrypted?: number | boolean
+    keyGeneration?: number | null
     timestamp: string
     senderName: string
     senderAvatar?: string
@@ -465,6 +548,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 })
             } catch (error) {
                 console.error('Failed to grant group key to new member:', error)
+            }
+        })
+
+        socket.on('channel-key-rotation-needed', async (payload: { channelId: string; generation: number }) => {
+            const { e2eePrivateKey, user: currentUser } = useAuthStore.getState()
+            if (!e2eePrivateKey || !currentUser) {
+                return
+            }
+
+            try {
+                await performChannelKeyRotation(payload.channelId, payload.generation)
+            } catch (error) {
+                // A 409 just means another online member already won the rotation
+                // race - nothing to do, the next /keys/me fetch picks up their result.
+                console.error('Failed to rotate channel key:', error)
+            }
+        })
+
+        socket.on('group-key-rotation-needed', async (payload: { groupChatId: string; generation: number }) => {
+            const { e2eePrivateKey, user: currentUser } = useAuthStore.getState()
+            if (!e2eePrivateKey || !currentUser) {
+                return
+            }
+
+            try {
+                await performGroupKeyRotation(payload.groupChatId, payload.generation)
+            } catch (error) {
+                console.error('Failed to rotate group key:', error)
             }
         })
 
@@ -1597,7 +1708,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 wrappedKey,
                 wrappedIv,
             })
-            cacheChannelKey(String(response.data.channel.id), channelKey)
+            cacheChannelKey(String(response.data.channel.id), 1, channelKey)
             return { ok: true }
         } catch (error) {
             console.error('Error creating channel:', error)
@@ -1638,6 +1749,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         : channel,
                 ),
             }))
+
+            const channel = get().channels.find((c) => c.id === String(channelId))
+            rotateIfStale('channel', String(channelId), channel?.keyGenerationRotatedAt, channel?.currentKeyGeneration)
         } catch (error) {
             console.error('Error loading channel messages:', error)
         }
@@ -1821,7 +1935,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
             const response = await axios.post(`${API_URL}/group-chats`, { name, memberIds, keys })
             const groupChat = normalizeGroupChat(response.data)
-            cacheGroupKey(groupChat.id, groupKey)
+            cacheGroupKey(groupChat.id, 1, groupKey)
 
             set((state) => ({ groupChats: [groupChat, ...state.groupChats] }))
             return groupChat
@@ -1851,6 +1965,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         : group,
                 ),
             }))
+
+            const groupChat = get().groupChats.find((g) => g.id === String(groupChatId))
+            rotateIfStale('group', String(groupChatId), groupChat?.keyGenerationRotatedAt, groupChat?.currentKeyGeneration)
 
             try {
                 const readStateResponse = await axios.get(`${API_URL}/group-chats/${groupChatId}/read-state`)
@@ -2114,7 +2231,7 @@ const processIncomingMessage = async (message: Message) => {
 
     if (normalizedMessage.groupChatId) {
         try {
-            const groupKey = await getGroupKey(String(normalizedMessage.groupChatId), e2eePrivateKey)
+            const groupKey = await getGroupKey(String(normalizedMessage.groupChatId), e2eePrivateKey, normalizedMessage.keyGeneration ?? undefined)
             const content = await decryptMessage(normalizedMessage.cipherText, normalizedMessage.cipherIv, groupKey)
             return { ...normalizedMessage, content }
         } catch (error) {
@@ -2130,6 +2247,7 @@ const processIncomingMessage = async (message: Message) => {
                 e2eePrivateKey,
                 String(user.id),
                 useChatStore.getState().socket,
+                normalizedMessage.keyGeneration ?? undefined,
             )
             const content = await decryptMessage(normalizedMessage.cipherText, normalizedMessage.cipherIv, channelKey)
             return { ...normalizedMessage, content }

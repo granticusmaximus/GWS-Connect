@@ -6,13 +6,16 @@ import {
 	createGroupChat,
 	findGroupChatById,
 	findGroupChatsForUser,
-	getGroupChatKeyForUser,
+	getGroupChatKeyForUserAtGeneration,
 	getGroupChatMembers,
+	getCurrentGroupChatKeyGeneration,
+	groupChatHasAnyKeyGeneration,
+	insertGroupChatKeyGenerations,
 	isGroupChatMember,
 	markGroupChatVisited,
 	removeGroupChatMember,
+	rotateGroupChatKey,
 	setGroupChatDisappearingSeconds,
-	upsertGroupChatKeys,
 } from '../models/GroupChat.js';
 import { getGroupChatVisits } from '../models/Message.js';
 
@@ -60,7 +63,7 @@ router.post('/', authenticateToken, async (req, res) => {
 					wrappedIv: String(key.wrappedIv),
 					wrappedByUserId: req.user.id,
 				}));
-			upsertGroupChatKeys(groupChatId, validKeys);
+			insertGroupChatKeyGenerations(groupChatId, 1, validKeys);
 		}
 
 		const payload = {
@@ -144,9 +147,41 @@ router.get('/:groupChatId/keys/me', authenticateToken, async (req, res) => {
 			return res.status(403).json({ message: access.reason });
 		}
 
-		const key = getGroupChatKeyForUser(req.params.groupChatId, req.user.id);
+		const currentGeneration = getCurrentGroupChatKeyGeneration(req.params.groupChatId) || 1;
+		const key = getGroupChatKeyForUserAtGeneration(req.params.groupChatId, req.user.id, currentGeneration);
 		if (!key) {
-			return res.status(404).json({ message: 'Encryption key not yet available' });
+			return res.status(404).json({
+				message: 'Encryption key not yet available',
+				hasAnyKey: groupChatHasAnyKeyGeneration(req.params.groupChatId),
+			});
+		}
+
+		res.json(key);
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+// Fetch my key for a specific (possibly historical) generation - used when
+// decrypting an older message encrypted before the most recent rotation.
+router.get('/:groupChatId/keys/me/:generation', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
+		if (!access.groupChat) {
+			return res.status(404).json({ message: 'Group chat not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const generation = Number(req.params.generation);
+		if (!Number.isInteger(generation) || generation < 1) {
+			return res.status(400).json({ message: 'Invalid key generation' });
+		}
+
+		const key = getGroupChatKeyForUserAtGeneration(req.params.groupChatId, req.user.id, generation);
+		if (!key) {
+			return res.status(404).json({ message: 'Encryption key not available for this generation' });
 		}
 
 		res.json(key);
@@ -157,7 +192,8 @@ router.get('/:groupChatId/keys/me', authenticateToken, async (req, res) => {
 
 // Grant key access to a fellow member who joined without one (e.g. via invite
 // link redemption). Any existing member who already holds the group key may
-// wrap and upload it for the target member.
+// wrap and upload it for the target member - always at the current
+// generation, never a past one.
 router.post('/:groupChatId/keys', authenticateToken, async (req, res) => {
 	try {
 		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
@@ -178,11 +214,79 @@ router.post('/:groupChatId/keys', authenticateToken, async (req, res) => {
 			return res.status(400).json({ message: 'Target user is not a member of this group chat' });
 		}
 
-		upsertGroupChatKeys(req.params.groupChatId, [
+		const currentGeneration = getCurrentGroupChatKeyGeneration(req.params.groupChatId) || 1;
+		insertGroupChatKeyGenerations(req.params.groupChatId, currentGeneration, [
 			{ userId: targetUserId, wrappedKey: String(wrappedKey), wrappedIv: String(wrappedIv), wrappedByUserId: req.user.id },
 		]);
 
 		res.json({ ok: true });
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+// Rotate the group key to a new generation, wrapping it for every current
+// member. Triggered after a member leaves/is removed, or periodically by a
+// client noticing the current generation is stale.
+router.post('/:groupChatId/keys/rotate', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessGroupChat(req.params.groupChatId, req.user.id);
+		if (!access.groupChat) {
+			return res.status(404).json({ message: 'Group chat not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const { generation, wraps } = req.body;
+		const newGeneration = Number(generation);
+		if (!Number.isInteger(newGeneration) || newGeneration < 2) {
+			return res.status(400).json({ message: 'Invalid target generation' });
+		}
+		if (!Array.isArray(wraps) || wraps.length === 0) {
+			return res.status(400).json({ message: 'At least one wrapped key is required' });
+		}
+
+		const currentGeneration = getCurrentGroupChatKeyGeneration(req.params.groupChatId) || 1;
+		if (newGeneration !== currentGeneration + 1) {
+			return res.status(409).json({ message: 'Group key generation has already moved on' });
+		}
+
+		const validatedWraps = [];
+		for (const wrap of wraps) {
+			const wrapUserId = Number(wrap?.userId);
+			if (!Number.isInteger(wrapUserId) || !wrap?.wrappedKey || !wrap?.wrappedIv) {
+				return res.status(400).json({ message: 'Each wrap requires userId, wrappedKey, and wrappedIv' });
+			}
+			if (!isGroupChatMember(req.params.groupChatId, wrapUserId)) {
+				continue;
+			}
+			validatedWraps.push({
+				userId: wrapUserId,
+				wrappedKey: String(wrap.wrappedKey),
+				wrappedIv: String(wrap.wrappedIv),
+				wrappedByUserId: req.user.id,
+			});
+		}
+
+		const rotated = rotateGroupChatKey(
+			req.params.groupChatId,
+			currentGeneration,
+			newGeneration,
+			validatedWraps,
+		);
+
+		if (!rotated) {
+			return res.status(409).json({ message: 'Group key generation has already moved on' });
+		}
+
+		const io = req.app.get('io');
+		io.to(`group:${req.params.groupChatId}`).emit('group-key-rotated', {
+			groupChatId: String(req.params.groupChatId),
+			generation: newGeneration,
+		});
+
+		res.json({ ok: true, generation: newGeneration });
 	} catch (error) {
 		res.status(500).json({ message: 'Server error' });
 	}
@@ -256,7 +360,8 @@ router.post('/:groupChatId/members', authenticateToken, async (req, res) => {
 
 		const { wrappedKey, wrappedIv } = req.body;
 		if (wrappedKey && wrappedIv) {
-			upsertGroupChatKeys(req.params.groupChatId, [
+			const currentGeneration = getCurrentGroupChatKeyGeneration(req.params.groupChatId) || 1;
+			insertGroupChatKeyGenerations(req.params.groupChatId, currentGeneration, [
 				{ userId, wrappedKey: String(wrappedKey), wrappedIv: String(wrappedIv), wrappedByUserId: req.user.id },
 			]);
 		}
@@ -291,6 +396,14 @@ router.post('/:groupChatId/leave', authenticateToken, async (req, res) => {
 
 		const io = req.app.get('io');
 		io.in(String(req.user.id)).socketsLeave(`group:${req.params.groupChatId}`);
+
+		// A member just left, so the remaining members need a fresh key - the
+		// one this member had access to must not keep working for them.
+		const currentGeneration = getCurrentGroupChatKeyGeneration(req.params.groupChatId) || 1;
+		io.to(`group:${req.params.groupChatId}`).emit('group-key-rotation-needed', {
+			groupChatId: String(req.params.groupChatId),
+			generation: currentGeneration + 1,
+		});
 
 		res.json({ ok: true });
 	} catch (error) {

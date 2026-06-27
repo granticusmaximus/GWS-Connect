@@ -9,6 +9,7 @@ interface AttachmentLike {
     fileIv?: string | null
     cipherIv?: string | null
     isEncrypted?: number | boolean
+    keyGeneration?: number | null
 }
 
 interface AttachmentContext {
@@ -48,7 +49,7 @@ export const useDecryptedAttachment = (item: AttachmentLike | null | undefined, 
             cancelled = true
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [item?.id, item?.fileUrl, item?.isEncrypted, context.channelId, context.recipientId, context.groupChatId])
+    }, [item?.id, item?.fileUrl, item?.isEncrypted, item?.keyGeneration, context.channelId, context.recipientId, context.groupChatId])
 
     return { url: resolved?.url ?? '', name: resolved?.name ?? '', type: resolved?.type ?? '', loading, error }
 }

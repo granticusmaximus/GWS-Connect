@@ -246,44 +246,66 @@ const unwrapGroupKey = async (
     return importRawKey(rawKeyBase64)
 }
 
+// When `generation` is omitted, fetches and caches the *current* generation
+// (whatever the server says that is right now). When provided, fetches a
+// specific (possibly historical) generation, used when decrypting an older
+// message sent before the most recent rotation.
 export const getGroupKey = async (
     groupChatId: string,
     privateKey: CryptoKey,
+    generation?: number,
 ) => {
-    if (groupKeyCache.has(groupChatId)) {
-        return groupKeyCache.get(groupChatId) as CryptoKey
+    if (generation !== undefined) {
+        const cacheKey = `${groupChatId}:${generation}`
+        if (groupKeyCache.has(cacheKey)) {
+            return groupKeyCache.get(cacheKey) as CryptoKey
+        }
+        const response = await axios.get(`${API_URL}/group-chats/${groupChatId}/keys/me/${generation}`)
+        const { wrappedKey, wrappedIv, wrappedByUserId } = response.data
+        const groupKey = await unwrapGroupKey(wrappedKey, wrappedIv, privateKey, String(wrappedByUserId))
+        groupKeyCache.set(cacheKey, groupKey)
+        return groupKey
     }
 
     const response = await axios.get(`${API_URL}/group-chats/${groupChatId}/keys/me`)
-    const { wrappedKey, wrappedIv, wrappedByUserId } = response.data
+    const { wrappedKey, wrappedIv, wrappedByUserId, keyGeneration } = response.data
     const groupKey = await unwrapGroupKey(wrappedKey, wrappedIv, privateKey, String(wrappedByUserId))
 
-    groupKeyCache.set(groupChatId, groupKey)
+    groupKeyCache.set(`${groupChatId}:${keyGeneration}`, groupKey)
     return groupKey
 }
 
-export const cacheGroupKey = (groupChatId: string, groupKey: CryptoKey) => {
-    groupKeyCache.set(groupChatId, groupKey)
+export const cacheGroupKey = (groupChatId: string, generation: number, groupKey: CryptoKey) => {
+    groupKeyCache.set(`${groupChatId}:${generation}`, groupKey)
 }
 
 export const getChannelKey = async (
     channelId: string,
     privateKey: CryptoKey,
+    generation?: number,
 ) => {
-    if (channelKeyCache.has(channelId)) {
-        return channelKeyCache.get(channelId) as CryptoKey
+    if (generation !== undefined) {
+        const cacheKey = `${channelId}:${generation}`
+        if (channelKeyCache.has(cacheKey)) {
+            return channelKeyCache.get(cacheKey) as CryptoKey
+        }
+        const response = await axios.get(`${API_URL}/channels/${channelId}/keys/me/${generation}`)
+        const { wrappedKey, wrappedIv, wrappedByUserId } = response.data
+        const channelKey = await unwrapGroupKey(wrappedKey, wrappedIv, privateKey, String(wrappedByUserId))
+        channelKeyCache.set(cacheKey, channelKey)
+        return channelKey
     }
 
     const response = await axios.get(`${API_URL}/channels/${channelId}/keys/me`)
-    const { wrappedKey, wrappedIv, wrappedByUserId } = response.data
+    const { wrappedKey, wrappedIv, wrappedByUserId, keyGeneration } = response.data
     const channelKey = await unwrapGroupKey(wrappedKey, wrappedIv, privateKey, String(wrappedByUserId))
 
-    channelKeyCache.set(channelId, channelKey)
+    channelKeyCache.set(`${channelId}:${keyGeneration}`, channelKey)
     return channelKey
 }
 
-export const cacheChannelKey = (channelId: string, channelKey: CryptoKey) => {
-    channelKeyCache.set(channelId, channelKey)
+export const cacheChannelKey = (channelId: string, generation: number, channelKey: CryptoKey) => {
+    channelKeyCache.set(`${channelId}:${generation}`, channelKey)
 }
 
 export const clearE2eeCache = () => {

@@ -164,6 +164,57 @@ export const getGroupChatKeyForUser = (groupChatId, userId) => {
 		.get(groupChatId, userId);
 };
 
+export const getCurrentGroupChatKeyGeneration = (groupChatId) => {
+	const row = db
+		.prepare('SELECT currentKeyGeneration FROM group_chats WHERE id = ?')
+		.get(groupChatId);
+	return row ? row.currentKeyGeneration : null;
+};
+
+export const groupChatHasAnyKeyGeneration = (groupChatId) => {
+	return !!db
+		.prepare('SELECT 1 FROM group_chat_key_generations WHERE groupChatId = ? LIMIT 1')
+		.get(groupChatId);
+};
+
+export const getGroupChatKeyForUserAtGeneration = (groupChatId, userId, generation) => {
+	return db
+		.prepare(
+			'SELECT wrappedKey, wrappedIv, wrappedByUserId, keyGeneration FROM group_chat_key_generations WHERE groupChatId = ? AND userId = ? AND keyGeneration = ?',
+		)
+		.get(groupChatId, userId, generation);
+};
+
+export const insertGroupChatKeyGenerations = (groupChatId, generation, keys = []) => {
+	const stmt = db.prepare(`
+    INSERT INTO group_chat_key_generations (groupChatId, userId, keyGeneration, wrappedKey, wrappedIv, wrappedByUserId)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(groupChatId, userId, keyGeneration) DO UPDATE SET
+      wrappedKey = excluded.wrappedKey,
+      wrappedIv = excluded.wrappedIv,
+      wrappedByUserId = excluded.wrappedByUserId
+  `);
+
+	keys.forEach(({ userId, wrappedKey, wrappedIv, wrappedByUserId }) => {
+		stmt.run(groupChatId, userId, generation, wrappedKey, wrappedIv, wrappedByUserId);
+	});
+};
+
+export const rotateGroupChatKey = db.transaction((groupChatId, expectedCurrentGeneration, newGeneration, keys) => {
+	const result = db
+		.prepare(
+			'UPDATE group_chats SET currentKeyGeneration = ?, keyGenerationRotatedAt = CURRENT_TIMESTAMP WHERE id = ? AND currentKeyGeneration = ?',
+		)
+		.run(newGeneration, groupChatId, expectedCurrentGeneration);
+
+	if (result.changes !== 1) {
+		return false;
+	}
+
+	insertGroupChatKeyGenerations(groupChatId, newGeneration, keys);
+	return true;
+});
+
 export const canAccessGroupChat = (groupChatId, userId) => {
 	const groupChat = findGroupChatById(groupChatId);
 	if (!groupChat) {

@@ -33,9 +33,10 @@ import { getMessageReactions } from '../models/Reaction.js';
 import {
 	canAccessChannel,
 	getChannelMembers,
+	getCurrentChannelKeyGeneration,
 	markChannelVisited,
 } from '../models/Channel.js';
-import { canAccessGroupChat, getGroupChatMembers, markGroupChatVisited } from '../models/GroupChat.js';
+import { canAccessGroupChat, getCurrentGroupChatKeyGeneration, getGroupChatMembers, markGroupChatVisited } from '../models/GroupChat.js';
 import { canSendMessage, getUserRole } from '../middleware/roles.js';
 import { findUserById } from '../models/User.js';
 import {
@@ -809,6 +810,13 @@ router.post(
 				return res.status(400).json({ message: replyState.error });
 			}
 
+			let messageKeyGeneration = null;
+			if (channelId) {
+				messageKeyGeneration = getCurrentChannelKeyGeneration(channelId) || 1;
+			} else if (groupChatId) {
+				messageKeyGeneration = getCurrentGroupChatKeyGeneration(groupChatId) || 1;
+			}
+
 			const ttlSeconds = getConversationTtlSeconds({
 				channelId,
 				recipientId,
@@ -833,6 +841,7 @@ router.post(
 				groupChatId || null,
 				messageExpiresAt,
 				fileIv,
+				messageKeyGeneration,
 			);
 
 			const fileUrl = `/api/messages/file/${messageId}`;
@@ -857,6 +866,7 @@ router.post(
 				fileIv,
 				cipherIv: fileMetaIv,
 				isEncrypted: 1,
+				keyGeneration: messageKeyGeneration,
 				timestamp: new Date(),
 				reactions: [],
 				mentions,

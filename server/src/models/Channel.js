@@ -157,6 +157,64 @@ export const channelHasAnyKey = (channelId) => {
 		.get(channelId);
 };
 
+export const getCurrentChannelKeyGeneration = (channelId) => {
+	const row = db
+		.prepare('SELECT currentKeyGeneration FROM channels WHERE id = ?')
+		.get(channelId);
+	return row ? row.currentKeyGeneration : null;
+};
+
+export const channelHasAnyKeyGeneration = (channelId) => {
+	return !!db
+		.prepare('SELECT 1 FROM channel_key_generations WHERE channelId = ? LIMIT 1')
+		.get(channelId);
+};
+
+export const getChannelKeyForUserAtGeneration = (channelId, userId, generation) => {
+	return db
+		.prepare(
+			'SELECT wrappedKey, wrappedIv, wrappedByUserId, keyGeneration FROM channel_key_generations WHERE channelId = ? AND userId = ? AND keyGeneration = ?',
+		)
+		.get(channelId, userId, generation);
+};
+
+// Inserts wrapped keys for a single generation (creation, or granting a new
+// joiner their copy of the *current* generation - never a past one).
+export const insertChannelKeyGenerations = (channelId, generation, keys = []) => {
+	const stmt = db.prepare(`
+    INSERT INTO channel_key_generations (channelId, userId, keyGeneration, wrappedKey, wrappedIv, wrappedByUserId)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(channelId, userId, keyGeneration) DO UPDATE SET
+      wrappedKey = excluded.wrappedKey,
+      wrappedIv = excluded.wrappedIv,
+      wrappedByUserId = excluded.wrappedByUserId
+  `);
+
+	keys.forEach(({ userId, wrappedKey, wrappedIv, wrappedByUserId }) => {
+		stmt.run(channelId, userId, generation, wrappedKey, wrappedIv, wrappedByUserId);
+	});
+};
+
+// Atomically advances the channel to a new key generation and stores the
+// wrapped keys for every current member at that generation. Uses an
+// optimistic-concurrency UPDATE so that if two members race to rotate at the
+// same time, only one wins - returns false (no-op) for the loser instead of
+// creating a conflicting/duplicate generation.
+export const rotateChannelKey = db.transaction((channelId, expectedCurrentGeneration, newGeneration, keys) => {
+	const result = db
+		.prepare(
+			'UPDATE channels SET currentKeyGeneration = ?, keyGenerationRotatedAt = CURRENT_TIMESTAMP WHERE id = ? AND currentKeyGeneration = ?',
+		)
+		.run(newGeneration, channelId, expectedCurrentGeneration);
+
+	if (result.changes !== 1) {
+		return false;
+	}
+
+	insertChannelKeyGenerations(channelId, newGeneration, keys);
+	return true;
+});
+
 export const getChannelMembers = (channelId) => {
 	const stmt = db.prepare(`
     SELECT u.id, u.username, u.avatar

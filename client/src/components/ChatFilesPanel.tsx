@@ -11,6 +11,7 @@ interface SharedFileItem {
   fileIv?: string | null
   cipherIv?: string | null
   isEncrypted?: number | boolean
+  keyGeneration?: number | null
   timestamp: string
   senderName: string
   senderAvatar?: string

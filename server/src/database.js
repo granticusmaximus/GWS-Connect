@@ -288,6 +288,18 @@ if (!channelColumns.includes('disappearingMessagesSeconds')) {
 	).run();
 }
 
+if (!channelColumns.includes('currentKeyGeneration')) {
+	db.prepare(
+		'ALTER TABLE channels ADD COLUMN currentKeyGeneration INTEGER DEFAULT 1',
+	).run();
+}
+
+if (!channelColumns.includes('keyGenerationRotatedAt')) {
+	db.prepare(
+		'ALTER TABLE channels ADD COLUMN keyGenerationRotatedAt DATETIME DEFAULT CURRENT_TIMESTAMP',
+	).run();
+}
+
 const messageColumns = db
 	.prepare("PRAGMA table_info('messages')")
 	.all()
@@ -417,6 +429,49 @@ db.exec(`
     FOREIGN KEY (wrappedByUserId) REFERENCES users(id) ON DELETE CASCADE
   );
 
+  -- Superset of group_chat_keys/channel_keys: keeps every key generation
+  -- rather than just the latest, so key rotation (on membership removal or
+  -- periodically) can't break decryption of messages sent under an older
+  -- generation. The older tables above are left in place but unused by new
+  -- code going forward.
+  CREATE TABLE IF NOT EXISTS group_chat_key_generations (
+    groupChatId INTEGER NOT NULL,
+    userId INTEGER NOT NULL,
+    keyGeneration INTEGER NOT NULL,
+    wrappedKey TEXT NOT NULL,
+    wrappedIv TEXT NOT NULL,
+    wrappedByUserId INTEGER NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (groupChatId, userId, keyGeneration),
+    FOREIGN KEY (groupChatId) REFERENCES group_chats(id) ON DELETE CASCADE,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (wrappedByUserId) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS channel_key_generations (
+    channelId INTEGER NOT NULL,
+    userId INTEGER NOT NULL,
+    keyGeneration INTEGER NOT NULL,
+    wrappedKey TEXT NOT NULL,
+    wrappedIv TEXT NOT NULL,
+    wrappedByUserId INTEGER NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (channelId, userId, keyGeneration),
+    FOREIGN KEY (channelId) REFERENCES channels(id) ON DELETE CASCADE,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (wrappedByUserId) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  INSERT OR IGNORE INTO channel_key_generations
+    (channelId, userId, keyGeneration, wrappedKey, wrappedIv, wrappedByUserId, createdAt)
+  SELECT channelId, userId, 1, wrappedKey, wrappedIv, wrappedByUserId, createdAt
+  FROM channel_keys;
+
+  INSERT OR IGNORE INTO group_chat_key_generations
+    (groupChatId, userId, keyGeneration, wrappedKey, wrappedIv, wrappedByUserId, createdAt)
+  SELECT groupChatId, userId, 1, wrappedKey, wrappedIv, wrappedByUserId, createdAt
+  FROM group_chat_keys;
+
   CREATE TABLE IF NOT EXISTS invite_links (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT NOT NULL UNIQUE,
@@ -453,12 +508,28 @@ if (!groupChatColumns.includes('disappearingMessagesSeconds')) {
 	).run();
 }
 
+if (!groupChatColumns.includes('currentKeyGeneration')) {
+	db.prepare(
+		'ALTER TABLE group_chats ADD COLUMN currentKeyGeneration INTEGER DEFAULT 1',
+	).run();
+}
+
+if (!groupChatColumns.includes('keyGenerationRotatedAt')) {
+	db.prepare(
+		'ALTER TABLE group_chats ADD COLUMN keyGenerationRotatedAt DATETIME DEFAULT CURRENT_TIMESTAMP',
+	).run();
+}
+
 if (!messageColumns.includes('expiresAt')) {
 	db.prepare('ALTER TABLE messages ADD COLUMN expiresAt DATETIME').run();
 }
 
 if (!messageColumns.includes('fileIv')) {
 	db.prepare('ALTER TABLE messages ADD COLUMN fileIv TEXT').run();
+}
+
+if (!messageColumns.includes('keyGeneration')) {
+	db.prepare('ALTER TABLE messages ADD COLUMN keyGeneration INTEGER').run();
 }
 
 db.exec(`

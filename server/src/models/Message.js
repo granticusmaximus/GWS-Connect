@@ -62,10 +62,11 @@ export const createMessage = (
 	groupChatId = null,
 	expiresAt = null,
 	fileIv = null,
+	keyGeneration = null,
 ) => {
 	const stmt = db.prepare(`
-    INSERT INTO messages (content, senderId, channelId, recipientId, groupChatId, replyToMessageId, threadRootMessageId, fileUrl, fileName, fileType, filePath, cipherText, cipherIv, isEncrypted, expiresAt, fileIv)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (content, senderId, channelId, recipientId, groupChatId, replyToMessageId, threadRootMessageId, fileUrl, fileName, fileType, filePath, cipherText, cipherIv, isEncrypted, expiresAt, fileIv, keyGeneration)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 	const result = stmt.run(
 		content,
@@ -84,6 +85,7 @@ export const createMessage = (
 		isEncrypted,
 		expiresAt,
 		fileIv,
+		keyGeneration,
 	);
 	return result.lastInsertRowid;
 };
@@ -641,7 +643,7 @@ export const getPinnedMessages = (channelId, recipientId, currentUserId, groupCh
 
 export const getChannelFiles = (channelId, limit = 200) => {
 	const stmt = db.prepare(
-		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.fileIv, m.cipherIv, m.isEncrypted, m.createdAt,
+		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.fileIv, m.cipherIv, m.isEncrypted, m.keyGeneration, m.createdAt,
             u.username as senderUsername, u.avatar as senderAvatar
      FROM messages m
      JOIN users u ON m.senderId = u.id
@@ -654,7 +656,7 @@ export const getChannelFiles = (channelId, limit = 200) => {
 
 export const getDirectFiles = (userId1, userId2, limit = 200) => {
 	const stmt = db.prepare(
-		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.fileIv, m.cipherIv, m.isEncrypted, m.createdAt,
+		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.fileIv, m.cipherIv, m.isEncrypted, m.keyGeneration, m.createdAt,
             u.username as senderUsername, u.avatar as senderAvatar
      FROM messages m
      JOIN users u ON m.senderId = u.id

@@ -6,13 +6,15 @@ import {
 	findChannelById,
 	addChannelMember,
 	canAccessChannel,
-	channelHasAnyKey,
+	channelHasAnyKeyGeneration,
 	findVisibleChannelsForUser,
-	getChannelKeyForUser,
+	getChannelKeyForUserAtGeneration,
 	getChannelRoster,
+	getCurrentChannelKeyGeneration,
+	insertChannelKeyGenerations,
 	isChannelMember,
 	markChannelVisited,
-	upsertChannelKeys,
+	rotateChannelKey,
 } from '../models/Channel.js';
 
 const router = express.Router();
@@ -59,7 +61,7 @@ router.post('/', authenticateToken, async (req, res) => {
 		const channel = findChannelById(channelId);
 		channel.status = status;
 
-		upsertChannelKeys(channelId, [
+		insertChannelKeyGenerations(channelId, 1, [
 			{ userId: req.user.id, wrappedKey: String(wrappedKey), wrappedIv: String(wrappedIv), wrappedByUserId: req.user.id },
 		]);
 
@@ -97,7 +99,9 @@ router.post('/:channelId/join', authenticateToken, async (req, res) => {
 		addChannelMember(req.params.channelId, req.user.id);
 
 		// Every channel is E2EE now, so every new joiner needs a key from an
-		// online member regardless of the channel's visibility setting.
+		// online member regardless of the channel's visibility setting. New
+		// joiners only ever receive the *current* generation - they can't
+		// retroactively decrypt history from before they joined.
 		const io = req.app.get('io');
 		io.to(`channel:${req.params.channelId}`).emit('channel-key-needed', {
 			channelId: String(req.params.channelId),
@@ -120,11 +124,12 @@ router.get('/:channelId/keys/me', authenticateToken, async (req, res) => {
 			return res.status(403).json({ message: access.reason });
 		}
 
-		const key = getChannelKeyForUser(req.params.channelId, req.user.id);
+		const currentGeneration = getCurrentChannelKeyGeneration(req.params.channelId) || 1;
+		const key = getChannelKeyForUserAtGeneration(req.params.channelId, req.user.id, currentGeneration);
 		if (!key) {
 			return res.status(404).json({
 				message: 'Encryption key not yet available',
-				hasAnyKey: channelHasAnyKey(req.params.channelId),
+				hasAnyKey: channelHasAnyKeyGeneration(req.params.channelId),
 			});
 		}
 
@@ -134,7 +139,36 @@ router.get('/:channelId/keys/me', authenticateToken, async (req, res) => {
 	}
 });
 
-// Grant key access to a fellow member who joined without one
+// Fetch my key for a specific (possibly historical) generation - used when
+// decrypting an older message encrypted before the most recent rotation.
+router.get('/:channelId/keys/me/:generation', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessChannel(req.params.channelId, req.user.id, getUserRole(req.user.id));
+		if (!access.channel) {
+			return res.status(404).json({ message: 'Channel not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const generation = Number(req.params.generation);
+		if (!Number.isInteger(generation) || generation < 1) {
+			return res.status(400).json({ message: 'Invalid key generation' });
+		}
+
+		const key = getChannelKeyForUserAtGeneration(req.params.channelId, req.user.id, generation);
+		if (!key) {
+			return res.status(404).json({ message: 'Encryption key not available for this generation' });
+		}
+
+		res.json(key);
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+// Grant key access to a fellow member who joined without one - always at the
+// current generation, never a past one.
 router.post('/:channelId/keys', authenticateToken, async (req, res) => {
 	try {
 		const access = canAccessChannel(req.params.channelId, req.user.id, getUserRole(req.user.id));
@@ -155,11 +189,80 @@ router.post('/:channelId/keys', authenticateToken, async (req, res) => {
 			return res.status(400).json({ message: 'Target user is not a member of this channel' });
 		}
 
-		upsertChannelKeys(req.params.channelId, [
+		const currentGeneration = getCurrentChannelKeyGeneration(req.params.channelId) || 1;
+		insertChannelKeyGenerations(req.params.channelId, currentGeneration, [
 			{ userId: targetUserId, wrappedKey: String(wrappedKey), wrappedIv: String(wrappedIv), wrappedByUserId: req.user.id },
 		]);
 
 		res.json({ ok: true });
+	} catch (error) {
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+// Rotate the channel key to a new generation, wrapping it for every current
+// member. Triggered after a member is removed, or periodically by a client
+// noticing the current generation is stale. Optimistic-concurrency protected
+// so that if two members race to rotate at once, only one succeeds.
+router.post('/:channelId/keys/rotate', authenticateToken, async (req, res) => {
+	try {
+		const access = canAccessChannel(req.params.channelId, req.user.id, getUserRole(req.user.id));
+		if (!access.channel) {
+			return res.status(404).json({ message: 'Channel not found' });
+		}
+		if (!access.allowed) {
+			return res.status(403).json({ message: access.reason });
+		}
+
+		const { generation, wraps } = req.body;
+		const newGeneration = Number(generation);
+		if (!Number.isInteger(newGeneration) || newGeneration < 2) {
+			return res.status(400).json({ message: 'Invalid target generation' });
+		}
+		if (!Array.isArray(wraps) || wraps.length === 0) {
+			return res.status(400).json({ message: 'At least one wrapped key is required' });
+		}
+
+		const currentGeneration = getCurrentChannelKeyGeneration(req.params.channelId) || 1;
+		if (newGeneration !== currentGeneration + 1) {
+			return res.status(409).json({ message: 'Channel key generation has already moved on' });
+		}
+
+		const validatedWraps = [];
+		for (const wrap of wraps) {
+			const wrapUserId = Number(wrap?.userId);
+			if (!Number.isInteger(wrapUserId) || !wrap?.wrappedKey || !wrap?.wrappedIv) {
+				return res.status(400).json({ message: 'Each wrap requires userId, wrappedKey, and wrappedIv' });
+			}
+			if (!isChannelMember(req.params.channelId, wrapUserId)) {
+				continue; // skip stale entries for members who left/were removed mid-rotation
+			}
+			validatedWraps.push({
+				userId: wrapUserId,
+				wrappedKey: String(wrap.wrappedKey),
+				wrappedIv: String(wrap.wrappedIv),
+				wrappedByUserId: req.user.id,
+			});
+		}
+
+		const rotated = rotateChannelKey(
+			req.params.channelId,
+			currentGeneration,
+			newGeneration,
+			validatedWraps,
+		);
+
+		if (!rotated) {
+			return res.status(409).json({ message: 'Channel key generation has already moved on' });
+		}
+
+		const io = req.app.get('io');
+		io.to(`channel:${req.params.channelId}`).emit('channel-key-rotated', {
+			channelId: String(req.params.channelId),
+			generation: newGeneration,
+		});
+
+		res.json({ ok: true, generation: newGeneration });
 	} catch (error) {
 		res.status(500).json({ message: 'Server error' });
 	}

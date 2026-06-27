@@ -6,6 +6,7 @@ import {
 	findChannelById,
 	findVisibleChannelsForUser,
 	getChannelRoster,
+	getCurrentChannelKeyGeneration,
 } from '../models/Channel.js';
 
 const router = express.Router();
@@ -30,6 +31,17 @@ const revokeChannelAccessForUser = (io, channelId, userId) => {
 		channelId: String(channelId),
 	});
 	emitVisibleChannelsForUser(io, userId);
+};
+
+// The removed member must not be able to decrypt anything sent after their
+// removal, even if they cached the old key client-side - ask the remaining
+// online members to rotate to a fresh generation.
+const emitChannelKeyRotationNeeded = (io, channelId) => {
+	const currentGeneration = getCurrentChannelKeyGeneration(channelId) || 1;
+	io.to(`channel:${channelId}`).emit('channel-key-rotation-needed', {
+		channelId: String(channelId),
+		generation: currentGeneration + 1,
+	});
 };
 
 // Update channel details (name, description)
@@ -238,6 +250,7 @@ router.delete(
 
 			const io = req.app.get('io');
 			revokeChannelAccessForUser(io, channelId, targetUserId);
+			emitChannelKeyRotationNeeded(io, channelId);
 			const members = emitChannelMembersUpdated(io, channelId);
 
 			return res.json({
@@ -338,6 +351,10 @@ router.post(
 				`DELETE FROM channel_members WHERE channelId = ? AND userId = ?`,
 			);
 			removeMemberStmt.run(req.params.channelId, userId);
+
+			const io = req.app.get('io');
+			revokeChannelAccessForUser(io, req.params.channelId, userId);
+			emitChannelKeyRotationNeeded(io, req.params.channelId);
 
 			res.json({ message: 'User banned successfully' });
 		} catch (error) {

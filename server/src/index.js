@@ -627,6 +627,18 @@ io.on('connection', async (socket) => {
 			// always-encrypted by design on the client side.
 			const resolvedIsEncrypted = channelId ? true : isEncrypted;
 			const safeContent = resolvedIsEncrypted ? '' : String(content || '');
+
+			// Stamp the key generation server-side - never trust the client's
+			// claim, same posture as isEncrypted above. DMs aren't versioned.
+			let messageKeyGeneration = null;
+			if (channelId) {
+				const { getCurrentChannelKeyGeneration } = await import('./models/Channel.js');
+				messageKeyGeneration = getCurrentChannelKeyGeneration(channelId) || 1;
+			} else if (groupChatId) {
+				const { getCurrentGroupChatKeyGeneration } = await import('./models/GroupChat.js');
+				messageKeyGeneration = getCurrentGroupChatKeyGeneration(groupChatId) || 1;
+			}
+
 			const ttlSeconds = getConversationTtlSeconds({
 				channelId,
 				recipientId,
@@ -650,6 +662,8 @@ io.on('connection', async (socket) => {
 				replyState.threadRootMessageId,
 				groupChatId || null,
 				messageExpiresAt,
+				null,
+				messageKeyGeneration,
 			);
 			const mentions = syncMessageMentions(messageId, safeContent);
 
@@ -671,6 +685,7 @@ io.on('connection', async (socket) => {
 				cipherText: cipherText || null,
 				cipherIv: cipherIv || null,
 				isEncrypted: resolvedIsEncrypted ? 1 : 0,
+				keyGeneration: messageKeyGeneration,
 				reactions: [],
 				mentions,
 				replyToMessageId: replyState.replyToMessageId,
