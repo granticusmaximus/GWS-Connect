@@ -308,8 +308,12 @@ if (!channelColumns.includes('currentKeyGeneration')) {
 }
 
 if (!channelColumns.includes('keyGenerationRotatedAt')) {
+	// SQLite can reject a non-constant ALTER TABLE ADD COLUMN default
+	// (CURRENT_TIMESTAMP) depending on the table's on-disk history - add the
+	// column bare, then backfill, rather than relying on the ALTER's default.
+	db.prepare('ALTER TABLE channels ADD COLUMN keyGenerationRotatedAt DATETIME').run();
 	db.prepare(
-		'ALTER TABLE channels ADD COLUMN keyGenerationRotatedAt DATETIME DEFAULT CURRENT_TIMESTAMP',
+		'UPDATE channels SET keyGenerationRotatedAt = CURRENT_TIMESTAMP WHERE keyGenerationRotatedAt IS NULL',
 	).run();
 }
 
@@ -557,8 +561,9 @@ if (!groupChatColumns.includes('currentKeyGeneration')) {
 }
 
 if (!groupChatColumns.includes('keyGenerationRotatedAt')) {
+	db.prepare('ALTER TABLE group_chats ADD COLUMN keyGenerationRotatedAt DATETIME').run();
 	db.prepare(
-		'ALTER TABLE group_chats ADD COLUMN keyGenerationRotatedAt DATETIME DEFAULT CURRENT_TIMESTAMP',
+		'UPDATE group_chats SET keyGenerationRotatedAt = CURRENT_TIMESTAMP WHERE keyGenerationRotatedAt IS NULL',
 	).run();
 }
 

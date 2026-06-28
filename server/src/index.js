@@ -104,10 +104,35 @@ const io = new Server(httpServer, {
 app.set('io', io);
 
 // Middleware
+// Matches the CSP set in client/nginx.conf for the web deployment - this
+// copy is what actually governs the HTML page when the Electron desktop
+// build spawns this server and has it serve the static client bundle
+// directly (see the DESKTOP_CLIENT_DIST block below), since nginx isn't in
+// that path at all. style-src allows 'unsafe-inline' for a handful of
+// components that need dynamic inline styles (poll bar width, hover-card
+// position) that can't be static Tailwind classes - script-src stays
+// strict with no exceptions, since that's the directive that actually
+// prevents XSS code execution.
 app.use(
 	helmet({
 		// Static assets and the desktop bundle are served cross-origin from file://
 		crossOriginResourcePolicy: { policy: 'cross-origin' },
+		contentSecurityPolicy: {
+			directives: {
+				defaultSrc: ["'self'"],
+				scriptSrc: ["'self'"],
+				styleSrc: ["'self'", "'unsafe-inline'"],
+				imgSrc: ["'self'", 'data:', 'blob:', 'https://*.giphy.com'],
+				fontSrc: ["'self'"],
+				connectSrc: ["'self'"],
+				workerSrc: ["'self'"],
+				frameSrc: ["'self'", 'blob:'],
+				objectSrc: ["'none'"],
+				baseUri: ["'self'"],
+				formAction: ["'self'"],
+				frameAncestors: ["'self'"],
+			},
+		},
 	}),
 );
 app.use(
