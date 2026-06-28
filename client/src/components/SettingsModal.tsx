@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import { XMarkIcon, ExclamationTriangleIcon, InformationCircleIcon } from '@heroicons/react/24/outline'
 import { usePreferencesStore } from '../store/preferencesStore'
@@ -20,7 +21,8 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
   const setTimeFormat = usePreferencesStore((state) => state.setTimeFormat)
   const setDateFormat = usePreferencesStore((state) => state.setDateFormat)
   const { autoCloseSidebarOnSelect, setAutoCloseSidebar } = useThemeStore()
-  const { user } = useAuthStore()
+  const { user, deleteAccount } = useAuthStore()
+  const navigate = useNavigate()
 
   const [pushEnabled, setPushEnabled] = useState(false)
   const [pushLoading, setPushLoading] = useState(false)
@@ -107,6 +109,27 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
       setSessionsError('Failed to log out other devices.')
     } finally {
       setSessionsLoading(false)
+    }
+  }
+
+  const [deleteStep, setDeleteStep] = useState<'idle' | 'confirm'>('idle')
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [deletePassword, setDeletePassword] = useState('')
+  const [deleteCode, setDeleteCode] = useState('')
+  const [deleteLoading, setDeleteLoading] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  const handleDeleteAccount = async () => {
+    setDeleteLoading(true)
+    setDeleteError(null)
+    try {
+      await deleteAccount(deletePassword, twoFactorEnabled ? deleteCode : undefined)
+      navigate('/login')
+    } catch (error) {
+      console.error('Delete account error:', error)
+      setDeleteError('Failed to delete account. Check your password and code, then try again.')
+    } finally {
+      setDeleteLoading(false)
     }
   }
 
@@ -584,6 +607,103 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
                     )}
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
+            <p className="text-sm font-medium text-red-600 dark:text-red-400">Danger zone</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Permanently deletes your login credentials and personal data. Channels, groups, and messages you've shared with others are not removed - they'll just show as posted by "Deleted User."
+            </p>
+
+            {deleteStep === 'idle' && (
+              <button
+                type="button"
+                onClick={() => { setDeleteStep('confirm'); setDeleteError(null) }}
+                className="mt-3 rounded-lg border border-red-300 dark:border-red-900/50 px-3 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors min-h-10"
+              >
+                Delete account
+              </button>
+            )}
+
+            {deleteStep === 'confirm' && (
+              <div className="mt-3 space-y-3">
+                <div className="flex gap-3 rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 p-3">
+                  <ExclamationTriangleIcon className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-red-700 dark:text-red-300">
+                    This cannot be undone. You will be permanently signed out of every device.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
+                    Type <span className="font-mono font-semibold">{user?.username}</span> to confirm
+                  </label>
+                  <input
+                    type="text"
+                    value={deleteConfirmText}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder={user?.username}
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                  />
+                </div>
+
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={deletePassword}
+                  onChange={(e) => setDeletePassword(e.target.value)}
+                  placeholder="Current password"
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                />
+
+                {twoFactorEnabled && (
+                  <input
+                    type="text"
+                    inputMode="text"
+                    autoComplete="one-time-code"
+                    value={deleteCode}
+                    onChange={(e) => setDeleteCode(e.target.value)}
+                    placeholder="Authentication code or backup code"
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                  />
+                )}
+
+                {deleteError && (
+                  <div className="rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-600 dark:text-red-400">
+                    {deleteError}
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteStep('idle')
+                      setDeleteConfirmText('')
+                      setDeletePassword('')
+                      setDeleteCode('')
+                      setDeleteError(null)
+                    }}
+                    className="rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 min-h-10"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteAccount}
+                    disabled={
+                      deleteLoading ||
+                      deleteConfirmText !== user?.username ||
+                      !deletePassword ||
+                      (twoFactorEnabled && !deleteCode)
+                    }
+                    className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 min-h-10 disabled:opacity-60"
+                  >
+                    {deleteLoading ? 'Deleting...' : 'Permanently delete my account'}
+                  </button>
+                </div>
               </div>
             )}
           </div>

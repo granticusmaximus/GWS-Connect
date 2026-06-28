@@ -58,3 +58,14 @@ export const revokeOtherSessions = (userId, exceptSessionId) => {
 		.run(userId, exceptSessionId);
 	return result.changes;
 };
+
+export const revokeAllSessions = (userId) => {
+	const result = db
+		.prepare(
+			`UPDATE user_sessions
+       SET revokedAt = CURRENT_TIMESTAMP
+       WHERE userId = ? AND revokedAt IS NULL`,
+		)
+		.run(userId);
+	return result.changes;
+};

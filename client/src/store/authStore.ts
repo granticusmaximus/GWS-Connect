@@ -61,6 +61,7 @@ interface AuthState {
     changePassword: (currentPassword: string, newPassword: string) => Promise<void>
     register: (username: string, email: string, password: string) => Promise<void>
     logout: () => Promise<void>
+    deleteAccount: (currentPassword: string, code?: string) => Promise<void>
     initializeAuth: () => void
     updateProfile: (updates: Partial<User>) => Promise<void>
 }
@@ -78,6 +79,25 @@ axios.interceptors.request.use(
 )
 
 export const useAuthStore = create<AuthState>((set, get) => {
+    // Shared by logout() and deleteAccount() - both end the session locally
+    // the same way, just with a different (or no) server call beforehand.
+    const clearLocalSession = () => {
+        localStorage.removeItem('token')
+        localStorage.removeItem('user')
+        sessionStorage.removeItem('e2eePrivateKeyJwk')
+        delete axios.defaults.headers.common['Authorization']
+        clearE2eeCache()
+        set({
+            user: null,
+            token: null,
+            initialized: true,
+            e2eePrivateKey: null,
+            e2eeReady: false,
+            e2eeKeyRecoveryNeeded: false,
+            twoFactorChallengeId: null,
+        })
+    }
+
     // Shared by login() (no 2FA) and completeTwoFactorLogin() (after the
     // second factor passes) - both end up with the same {token, user} shape
     // from the server and need the same E2EE bootstrap/recovery handling.
@@ -260,20 +280,14 @@ export const useAuthStore = create<AuthState>((set, get) => {
             console.error('Logout request failed:', error)
         }
 
-        localStorage.removeItem('token')
-        localStorage.removeItem('user')
-        sessionStorage.removeItem('e2eePrivateKeyJwk')
-        delete axios.defaults.headers.common['Authorization']
-        clearE2eeCache()
-        set({
-            user: null,
-            token: null,
-            initialized: true,
-            e2eePrivateKey: null,
-            e2eeReady: false,
-            e2eeKeyRecoveryNeeded: false,
-            twoFactorChallengeId: null,
-        })
+        clearLocalSession()
+    },
+
+    deleteAccount: async (currentPassword: string, code?: string) => {
+        await axios.post(`${API_URL}/auth/delete-account`, { currentPassword, code })
+        // Already revoked server-side as part of deletion - no separate
+        // /auth/logout call needed, just clear local state.
+        clearLocalSession()
     },
 
     updateProfile: async (updates: Partial<User>) => {

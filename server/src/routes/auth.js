@@ -7,13 +7,16 @@ import QRCode from 'qrcode';
 import { body, validationResult } from 'express-validator';
 import db from '../database.js';
 import {
+	anonymizeUser,
 	createUser,
+	deleteUserPersonalData,
 	findUserByEmail,
 	findUserByUsername,
 } from '../models/User.js';
 import {
 	createSession,
 	listActiveSessions,
+	revokeAllSessions,
 	revokeOtherSessions,
 	revokeSession,
 } from '../models/Session.js';
@@ -261,6 +264,38 @@ router.post(
 	},
 );
 
+// Accepts either a valid TOTP code or an unused backup code (consuming it on
+// success). Shared by the login challenge and account deletion, both of
+// which need "prove you still hold the second factor."
+const verifyTwoFactorCode = async (user, code) => {
+	const normalizedCode = String(code || '').trim();
+	// verify() throws on malformed input (e.g. a backup code's length) rather
+	// than returning { valid: false } - a backup code is valid to submit here,
+	// just not a valid TOTP, so treat any throw as "not a valid TOTP" and fall
+	// through to the backup-code check.
+	const totpResult = await verify({ secret: user.twoFactorSecret, token: normalizedCode }).catch(() => ({ valid: false }));
+	if (totpResult.valid) {
+		return true;
+	}
+
+	const backupCodes = db
+		.prepare(
+			'SELECT id, codeHash FROM two_factor_backup_codes WHERE userId = ? AND usedAt IS NULL',
+		)
+		.all(user.id);
+
+	for (const backupCode of backupCodes) {
+		if (await bcrypt.compare(normalizedCode, backupCode.codeHash)) {
+			db.prepare(
+				'UPDATE two_factor_backup_codes SET usedAt = CURRENT_TIMESTAMP WHERE id = ?',
+			).run(backupCode.id);
+			return true;
+		}
+	}
+
+	return false;
+};
+
 router.post(
 	'/2fa/challenge',
 	[
@@ -287,31 +322,9 @@ router.post(
 				return res.status(400).json({ message: 'Invalid or expired login session, please log in again' });
 			}
 
-			const normalizedCode = String(code).trim();
-			// verify() throws on malformed input (e.g. a backup code's length)
-			// rather than returning { valid: false } - a backup code is a valid
-			// thing to submit here, just not a valid TOTP, so treat any throw
-			// as "not a valid TOTP" and fall through to the backup-code check.
-			const totpResult = await verify({ secret: user.twoFactorSecret, token: normalizedCode }).catch(() => ({ valid: false }));
-
-			if (totpResult.valid) {
+			const isValid = await verifyTwoFactorCode(user, code);
+			if (isValid) {
 				return res.json(buildLoginResponse(user, req));
-			}
-
-			// Not a valid TOTP code - check unused backup codes.
-			const backupCodes = db
-				.prepare(
-					'SELECT id, codeHash FROM two_factor_backup_codes WHERE userId = ? AND usedAt IS NULL',
-				)
-				.all(user.id);
-
-			for (const backupCode of backupCodes) {
-				if (await bcrypt.compare(normalizedCode, backupCode.codeHash)) {
-					db.prepare(
-						'UPDATE two_factor_backup_codes SET usedAt = CURRENT_TIMESTAMP WHERE id = ?',
-					).run(backupCode.id);
-					return res.json(buildLoginResponse(user, req));
-				}
 			}
 
 			res.status(400).json({ message: 'Invalid authentication code' });
@@ -572,6 +585,14 @@ const disconnectOtherSockets = (io, userId, exceptSessionId) => {
 	}
 };
 
+const disconnectAllSocketsForUser = (io, userId) => {
+	for (const socket of io.sockets.sockets.values()) {
+		if (String(socket.user?.id) === String(userId)) {
+			socket.disconnect(true);
+		}
+	}
+};
+
 // List this user's active sessions/devices.
 router.get('/sessions', authenticateToken, async (req, res) => {
 	try {
@@ -630,6 +651,51 @@ router.post('/logout', authenticateToken, async (req, res) => {
 		res.json({ message: 'Logged out' });
 	} catch (error) {
 		console.error('Logout error:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+// Self-service account deletion - anonymizes the user in place (see
+// anonymizeUser/deleteUserPersonalData in models/User.js) rather than
+// hard-deleting, so channels/groups/messages this user created or sent
+// stay intact for other members instead of cascading away.
+router.post('/delete-account', authenticateToken, async (req, res) => {
+	try {
+		const { currentPassword, code } = req.body;
+		if (!currentPassword) {
+			return res.status(400).json({ message: 'Current password required' });
+		}
+
+		const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+		if (!user) {
+			return res.status(404).json({ message: 'User not found' });
+		}
+
+		const isMatch = await bcrypt.compare(currentPassword, user.password);
+		if (!isMatch) {
+			return res.status(400).json({ message: 'Invalid current password' });
+		}
+
+		if (user.twoFactorEnabled) {
+			if (!code) {
+				return res.status(400).json({ message: 'Authentication code required' });
+			}
+			const isCodeValid = await verifyTwoFactorCode(user, code);
+			if (!isCodeValid) {
+				return res.status(400).json({ message: 'Invalid authentication code' });
+			}
+		}
+
+		deleteUserPersonalData(user.id);
+		anonymizeUser(user.id);
+		revokeAllSessions(user.id);
+
+		const io = req.app.get('io');
+		disconnectAllSocketsForUser(io, user.id);
+
+		res.json({ message: 'Account deleted' });
+	} catch (error) {
+		console.error('Delete account error:', error);
 		res.status(500).json({ message: 'Server error' });
 	}
 });

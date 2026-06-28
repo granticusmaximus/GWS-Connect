@@ -1,3 +1,5 @@
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import db from '../database.js';
 
 export const DEFAULT_AVATAR = '/image.png';
@@ -169,4 +171,57 @@ export const searchUsers = (searchTerm) => {
 export const getUserPublicKey = (id) => {
 	const stmt = db.prepare('SELECT e2eePublicKey FROM users WHERE id = ?');
 	return stmt.get(id);
+};
+
+// Self-service account deletion scrubs the user's identity in place rather
+// than deleting the row - their messages and any channels/groups they
+// created stay intact for other members, just attributed to a generic
+// "Deleted User" instead of cascading the deletion out to other people's
+// shared content. Login becomes permanently impossible (unique email and
+// password are both replaced).
+export const anonymizeUser = (id) => {
+	const randomPassword = crypto.randomBytes(32).toString('hex');
+	const passwordHash = bcrypt.hashSync(randomPassword, 10);
+
+	db.prepare(
+		`UPDATE users SET
+      username = ?,
+      email = ?,
+      password = ?,
+      avatar = ?,
+      banner = '',
+      bio = '',
+      interests = '[]',
+      socialLinks = '{}',
+      contactInfo = '{}',
+      e2eePublicKey = NULL,
+      e2eeEncryptedPrivateKey = NULL,
+      e2eeSalt = NULL,
+      e2eeIv = NULL,
+      role = 'user',
+      mustChangePassword = 0,
+      twoFactorEnabled = 0,
+      twoFactorSecret = NULL,
+      pendingTwoFactorSecret = NULL,
+      failedLoginAttempts = 0,
+      lockedUntil = NULL
+    WHERE id = ?`,
+	).run(`deleted-user-${id}`, `deleted-user-${id}@deleted.invalid`, passwordHash, DEFAULT_AVATAR, id);
+};
+
+// Removes the genuinely-personal data tied to this account (their own
+// membership/keys/devices/relationships) without touching anything they
+// created or sent that other users still rely on.
+export const deleteUserPersonalData = (id) => {
+	db.prepare('DELETE FROM channel_members WHERE userId = ?').run(id);
+	db.prepare('DELETE FROM channel_managers WHERE userId = ?').run(id);
+	db.prepare('DELETE FROM group_chat_members WHERE userId = ?').run(id);
+	db.prepare('DELETE FROM channel_keys WHERE userId = ?').run(id);
+	db.prepare('DELETE FROM channel_key_generations WHERE userId = ?').run(id);
+	db.prepare('DELETE FROM group_chat_keys WHERE userId = ?').run(id);
+	db.prepare('DELETE FROM group_chat_key_generations WHERE userId = ?').run(id);
+	db.prepare('DELETE FROM two_factor_backup_codes WHERE userId = ?').run(id);
+	db.prepare('DELETE FROM push_subscriptions WHERE userId = ?').run(id);
+	db.prepare('DELETE FROM friends WHERE userId = ? OR friendId = ?').run(id, id);
+	db.prepare('DELETE FROM password_reset_requests WHERE userId = ?').run(id);
 };
