@@ -60,7 +60,7 @@ interface AuthState {
     completeTwoFactorLogin: (code: string, password: string) => Promise<void>
     changePassword: (currentPassword: string, newPassword: string) => Promise<void>
     register: (username: string, email: string, password: string) => Promise<void>
-    logout: () => void
+    logout: () => Promise<void>
     initializeAuth: () => void
     updateProfile: (updates: Partial<User>) => Promise<void>
 }
@@ -251,7 +251,15 @@ export const useAuthStore = create<AuthState>((set, get) => {
         }
     },
 
-    logout: () => {
+    logout: async () => {
+        try {
+            await axios.post(`${API_URL}/auth/logout`)
+        } catch (error) {
+            // Best-effort - if the token's already invalid/expired there's
+            // nothing to revoke server-side, just proceed to clear local state.
+            console.error('Logout request failed:', error)
+        }
+
         localStorage.removeItem('token')
         localStorage.removeItem('user')
         sessionStorage.removeItem('e2eePrivateKeyJwk')

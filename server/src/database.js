@@ -211,6 +211,19 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(userId);
 
+  CREATE TABLE IF NOT EXISTS user_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId INTEGER NOT NULL,
+    userAgent TEXT DEFAULT '',
+    ipAddress TEXT DEFAULT '',
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    lastSeenAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    revokedAt DATETIME,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(userId, revokedAt);
+
   CREATE TABLE IF NOT EXISTS user_notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     userId INTEGER NOT NULL,

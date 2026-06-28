@@ -11,6 +11,12 @@ import {
 	findUserByEmail,
 	findUserByUsername,
 } from '../models/User.js';
+import {
+	createSession,
+	listActiveSessions,
+	revokeOtherSessions,
+	revokeSession,
+} from '../models/Session.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -52,13 +58,26 @@ const consumeTwoFactorChallenge = (challengeId) => {
 	return challenge;
 };
 
-const buildLoginResponse = (user) => {
-	user.interests = JSON.parse(user.interests || '[]');
-	user.socialLinks = JSON.parse(user.socialLinks || '{}');
-	user.contactInfo = JSON.parse(user.contactInfo || '{}');
+const buildLoginResponse = (user, req) => {
+	// findUserById (used by register) already parses these JSON columns;
+	// findUserByEmail (used by login) does not - handle both shapes.
+	if (typeof user.interests === 'string') {
+		user.interests = JSON.parse(user.interests || '[]');
+	}
+	if (typeof user.socialLinks === 'string') {
+		user.socialLinks = JSON.parse(user.socialLinks || '{}');
+	}
+	if (typeof user.contactInfo === 'string') {
+		user.contactInfo = JSON.parse(user.contactInfo || '{}');
+	}
 	if (user.e2eePublicKey && typeof user.e2eePublicKey === 'string') {
 		user.e2eePublicKey = JSON.parse(user.e2eePublicKey);
 	}
+
+	const sessionId = createSession(user.id, {
+		userAgent: req.headers['user-agent'],
+		ipAddress: req.ip,
+	});
 
 	const token = jwt.sign(
 		{
@@ -66,6 +85,7 @@ const buildLoginResponse = (user) => {
 			username: user.username,
 			email: user.email,
 			role: user.role || 'user',
+			sid: sessionId,
 		},
 		getJwtSecret(),
 		{ expiresIn: '7d' },
@@ -169,36 +189,7 @@ router.post(
 			const newUser = findUserById(userId);
 			newUser.e2eePublicKey = JSON.parse(newUser.e2eePublicKey);
 
-			// Create token
-			const token = jwt.sign(
-				{
-					id: newUser.id,
-					username: newUser.username,
-					email: newUser.email,
-					role: newUser.role || 'user',
-				},
-				getJwtSecret(),
-				{
-					expiresIn: '7d',
-				},
-			);
-
-			res.status(201).json({
-				token,
-				user: {
-					id: newUser.id,
-					username: newUser.username,
-					email: newUser.email,
-					e2eePublicKey: newUser.e2eePublicKey,
-					e2eeEncryptedPrivateKey: newUser.e2eeEncryptedPrivateKey,
-					e2eeSalt: newUser.e2eeSalt,
-					e2eeIv: newUser.e2eeIv,
-					theme: newUser.theme || 'light',
-					avatar: newUser.avatar || '',
-					role: newUser.role || 'user',
-					mustChangePassword: newUser.mustChangePassword || 0,
-				},
-			});
+			res.status(201).json(buildLoginResponse(newUser, req));
 		} catch (error) {
 			console.error('Registration error:', error);
 			res.status(500).json({ message: 'Server error' });
@@ -262,7 +253,7 @@ router.post(
 				return res.json({ requiresTwoFactor: true, challengeId });
 			}
 
-			res.json(buildLoginResponse(user));
+			res.json(buildLoginResponse(user, req));
 		} catch (error) {
 			console.error('Login error:', error);
 			res.status(500).json({ message: 'Server error' });
@@ -304,7 +295,7 @@ router.post(
 			const totpResult = await verify({ secret: user.twoFactorSecret, token: normalizedCode }).catch(() => ({ valid: false }));
 
 			if (totpResult.valid) {
-				return res.json(buildLoginResponse(user));
+				return res.json(buildLoginResponse(user, req));
 			}
 
 			// Not a valid TOTP code - check unused backup codes.
@@ -319,7 +310,7 @@ router.post(
 					db.prepare(
 						'UPDATE two_factor_backup_codes SET usedAt = CURRENT_TIMESTAMP WHERE id = ?',
 					).run(backupCode.id);
-					return res.json(buildLoginResponse(user));
+					return res.json(buildLoginResponse(user, req));
 				}
 			}
 
@@ -564,5 +555,83 @@ router.post(
 		}
 	},
 );
+
+const disconnectSocketsForSession = (io, userId, sessionId) => {
+	for (const socket of io.sockets.sockets.values()) {
+		if (String(socket.user?.id) === String(userId) && socket.user?.sid === sessionId) {
+			socket.disconnect(true);
+		}
+	}
+};
+
+const disconnectOtherSockets = (io, userId, exceptSessionId) => {
+	for (const socket of io.sockets.sockets.values()) {
+		if (String(socket.user?.id) === String(userId) && socket.user?.sid !== exceptSessionId) {
+			socket.disconnect(true);
+		}
+	}
+};
+
+// List this user's active sessions/devices.
+router.get('/sessions', authenticateToken, async (req, res) => {
+	try {
+		const sessions = listActiveSessions(req.user.id).map((session) => ({
+			...session,
+			isCurrent: session.id === req.user.sid,
+		}));
+		res.json(sessions);
+	} catch (error) {
+		console.error('List sessions error:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+// Revoke a single session (e.g. a stolen/lost device) and immediately
+// disconnect any live socket tied to it.
+router.delete('/sessions/:sessionId', authenticateToken, async (req, res) => {
+	try {
+		const sessionId = Number(req.params.sessionId);
+		const revoked = revokeSession(sessionId, req.user.id);
+		if (!revoked) {
+			return res.status(404).json({ message: 'Session not found' });
+		}
+
+		const io = req.app.get('io');
+		disconnectSocketsForSession(io, req.user.id, sessionId);
+
+		res.json({ message: 'Session revoked' });
+	} catch (error) {
+		console.error('Revoke session error:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+// "Log out all other devices" - revoke everything except the caller's own
+// current session.
+router.delete('/sessions', authenticateToken, async (req, res) => {
+	try {
+		const revokedCount = revokeOtherSessions(req.user.id, req.user.sid);
+
+		const io = req.app.get('io');
+		disconnectOtherSockets(io, req.user.id, req.user.sid);
+
+		res.json({ message: 'Other sessions revoked', revokedCount });
+	} catch (error) {
+		console.error('Revoke other sessions error:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+// Real server-side logout - revokes the current session so the token can't
+// be reused even though it hasn't naturally expired yet.
+router.post('/logout', authenticateToken, async (req, res) => {
+	try {
+		revokeSession(req.user.sid, req.user.id);
+		res.json({ message: 'Logged out' });
+	} catch (error) {
+		console.error('Logout error:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
 
 export default router;

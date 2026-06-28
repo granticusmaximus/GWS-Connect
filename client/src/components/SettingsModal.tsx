@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import axios from 'axios'
 import { XMarkIcon, ExclamationTriangleIcon, InformationCircleIcon } from '@heroicons/react/24/outline'
 import { usePreferencesStore } from '../store/preferencesStore'
+import { formatDateTime } from '../utils/dateFormat'
 import { useThemeStore } from '../store/themeStore'
 import { useAuthStore } from '../store/authStore'
 import { API_URL } from '../config/runtime'
@@ -46,6 +47,67 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
       localStorage.setItem('user', JSON.stringify(updatedUser))
       return { user: updatedUser }
     })
+  }
+
+  interface UserSession {
+    id: number
+    userAgent: string
+    ipAddress: string
+    createdAt: string
+    lastSeenAt: string
+    isCurrent: boolean
+  }
+
+  const [sessions, setSessions] = useState<UserSession[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [sessionsError, setSessionsError] = useState<string | null>(null)
+  const [revokingSessionId, setRevokingSessionId] = useState<number | null>(null)
+
+  const loadSessions = async () => {
+    setSessionsLoading(true)
+    setSessionsError(null)
+    try {
+      const response = await axios.get(`${API_URL}/auth/sessions`)
+      setSessions(response.data)
+    } catch (error) {
+      console.error('Load sessions error:', error)
+      setSessionsError('Failed to load active sessions.')
+    } finally {
+      setSessionsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (isOpen) {
+      void loadSessions()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen])
+
+  const revokeSession = async (sessionId: number) => {
+    setRevokingSessionId(sessionId)
+    try {
+      await axios.delete(`${API_URL}/auth/sessions/${sessionId}`)
+      setSessions((prev) => prev.filter((session) => session.id !== sessionId))
+    } catch (error) {
+      console.error('Revoke session error:', error)
+      setSessionsError('Failed to revoke that session.')
+    } finally {
+      setRevokingSessionId(null)
+    }
+  }
+
+  const revokeOtherSessions = async () => {
+    setSessionsLoading(true)
+    try {
+      await axios.delete(`${API_URL}/auth/sessions`)
+      setSessions((prev) => prev.filter((session) => session.isCurrent))
+    } catch (error) {
+      console.error('Revoke other sessions error:', error)
+      setSessionsError('Failed to log out other devices.')
+    } finally {
+      setSessionsLoading(false)
+    }
   }
 
   const startTwoFactorSetup = async () => {
@@ -458,6 +520,70 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
                     {twoFactorLoading ? 'Disabling...' : 'Disable two-factor authentication'}
                   </button>
                 </div>
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">Active sessions</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Devices and browsers currently signed in to your account.
+                </p>
+              </div>
+              {sessions.some((session) => !session.isCurrent) && (
+                <button
+                  type="button"
+                  onClick={revokeOtherSessions}
+                  disabled={sessionsLoading}
+                  className="rounded-lg border border-red-300 dark:border-red-900/50 px-3 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors min-h-10 disabled:opacity-60"
+                >
+                  Log out other devices
+                </button>
+              )}
+            </div>
+
+            {sessionsError && (
+              <div className="mt-3 rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-600 dark:text-red-400">
+                {sessionsError}
+              </div>
+            )}
+
+            {sessionsLoading && sessions.length === 0 ? (
+              <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">Loading sessions...</p>
+            ) : (
+              <div className="mt-3 space-y-2">
+                {sessions.map((session) => (
+                  <div
+                    key={session.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm text-gray-900 dark:text-white truncate max-w-xs">
+                        {session.userAgent || 'Unknown device'}
+                        {session.isCurrent && (
+                          <span className="ml-2 rounded-full bg-primary-100 dark:bg-primary-900/40 px-2 py-0.5 text-xs font-medium text-primary-700 dark:text-primary-300">
+                            This device
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {session.ipAddress} · Last active {formatDateTime(new Date(session.lastSeenAt), dateFormat, timeFormat)}
+                      </p>
+                    </div>
+                    {!session.isCurrent && (
+                      <button
+                        type="button"
+                        onClick={() => revokeSession(session.id)}
+                        disabled={revokingSessionId === session.id}
+                        className="rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-60"
+                      >
+                        {revokingSessionId === session.id ? 'Revoking...' : 'Revoke'}
+                      </button>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>

@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { getActiveSession, touchSessionLastSeen } from '../models/Session.js';
 
 const getJwtSecret = () => {
 	const secret = process.env.JWT_SECRET;
@@ -36,6 +37,17 @@ export const authenticateToken = (req, res, next) => {
 			);
 			return res.status(403).json({ message: 'Invalid or expired token' });
 		}
+
+		// A valid signature isn't enough on its own - the session backing this
+		// token must still be active, otherwise revoking a stolen/lost device
+		// would do nothing until the token's 7-day expiry naturally arrives.
+		if (!getActiveSession(user.sid)) {
+			return res
+				.status(401)
+				.json({ message: 'Session expired or revoked, please log in again' });
+		}
+		touchSessionLastSeen(user.sid);
+
 		req.user = user;
 		next();
 	});
@@ -59,6 +71,12 @@ export const authenticateSocket = (socket, next) => {
 		if (err) {
 			return next(new Error('Authentication error'));
 		}
+
+		if (!getActiveSession(user.sid)) {
+			return next(new Error('Authentication error'));
+		}
+		touchSessionLastSeen(user.sid);
+
 		socket.user = user;
 		next();
 	});
