@@ -733,7 +733,7 @@ io.on('connection', async (socket) => {
 						.map((member) =>
 							sendPushToUser(member.id, {
 								title: 'GWS Connect',
-								body: `New message in group from ${socket.user.username}`,
+								body: 'You have a new message',
 								icon: '/gws-connect-favicon.svg',
 								url: '/dashboard',
 							}),
@@ -750,7 +750,7 @@ io.on('connection', async (socket) => {
 				const members = getChannelMembers(channelId);
 				const payload = {
 					title: 'GWS Connect',
-					body: `New message in #${channel?.name || 'channel'} from ${socket.user.username}`,
+					body: 'You have a new message',
 					icon: '/gws-connect-favicon.svg',
 					url: '/dashboard',
 				};
@@ -773,8 +773,8 @@ io.on('connection', async (socket) => {
 						channelId,
 					});
 					const mentionPayload = {
-						title: 'GWS Connect - You were mentioned!',
-						body: `${socket.user.username} mentioned you in #${channel?.name || 'channel'}`,
+						title: 'GWS Connect',
+						body: 'You were mentioned',
 						icon: '/gws-connect-favicon.svg',
 						url: '/dashboard',
 						tag: `mention-${messageId}`,
@@ -794,7 +794,7 @@ io.on('connection', async (socket) => {
 
 				await sendPushToUser(recipientId, {
 					title: 'GWS Connect',
-					body: `New message from ${socket.user.username}`,
+					body: 'You have a new message',
 					icon: '/gws-connect-favicon.svg',
 					url: '/dashboard',
 				});

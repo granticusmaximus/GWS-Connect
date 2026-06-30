@@ -654,7 +654,7 @@ router.post('/', authenticateToken, async (req, res) => {
 			const channel = findChannelById(channelId);
 			const payload = {
 				title: 'GWS Connect',
-				body: `New message in #${channel?.name || 'channel'} from ${req.user.username}`,
+				body: 'You have a new message',
 				icon: '/gws-connect-favicon.svg',
 				url: '/dashboard',
 			};
@@ -682,7 +682,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
 			await sendPushToUser(recipientId, {
 				title: 'GWS Connect',
-				body: `New message from ${req.user.username}`,
+				body: 'You have a new message',
 				icon: '/gws-connect-favicon.svg',
 				url: '/dashboard',
 			});
@@ -887,7 +887,7 @@ router.post(
 						.map((member) =>
 							sendPushToUser(member.id, {
 								title: 'GWS Connect',
-								body: `New file shared in group from ${req.user.username}`,
+								body: 'You have a new message',
 								icon: '/gws-connect-favicon.svg',
 								url: '/dashboard',
 							}),
@@ -913,8 +913,8 @@ router.post(
 					});
 					const channel = findCh(channelId);
 					const mentionPayload = {
-						title: 'GWS Connect - You were mentioned!',
-						body: `${req.user.username || 'A user'} mentioned you in #${channel?.name || 'channel'}`,
+						title: 'GWS Connect',
+						body: 'You were mentioned',
 						icon: '/gws-connect-favicon.svg',
 						url: '/dashboard',
 						tag: `mention-${messageId}`,
