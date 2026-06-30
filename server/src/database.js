@@ -372,6 +372,23 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_two_factor_backup_codes_user ON two_factor_backup_codes(userId);
+
+  CREATE TABLE IF NOT EXISTS message_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    messageId INTEGER NOT NULL,
+    reporterId INTEGER NOT NULL,
+    reason TEXT DEFAULT '',
+    content TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'reviewed', 'dismissed')),
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    reviewedBy INTEGER,
+    reviewedAt DATETIME,
+    FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (reporterId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (reviewedBy) REFERENCES users(id) ON DELETE SET NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_message_reports_status ON message_reports(status, createdAt);
 `);
 
 if (!messageColumns.includes('isPinned')) {

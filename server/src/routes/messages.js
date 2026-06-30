@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import db from '../database.js';
 import { fileURLToPath } from 'url';
 import { mkdirSync } from 'fs';
 import multer from 'multer';
@@ -1045,6 +1046,71 @@ router.get('/file/:messageId', authenticateToken, async (req, res) => {
 				query: req.query,
 			},
 		});
+		return res.status(500).json({ message: 'Server error' });
+	}
+});
+
+// Report a message for admin review. Only the reporter has the decrypted
+// content (since all messages are now E2EE) - they voluntarily re-submit
+// it here so admins can review it. This is the ONLY server-side path
+// where decrypted message content is stored: it requires the user to
+// deliberately initiate it.
+router.post('/:messageId/report', authenticateToken, async (req, res) => {
+	try {
+		const { reason = '', content = '' } = req.body;
+		const messageId = Number(req.params.messageId);
+
+		if (!Number.isInteger(messageId)) {
+			return res.status(400).json({ message: 'Invalid message id' });
+		}
+
+		const message = db.prepare(
+			'SELECT id, channelId, recipientId, groupChatId, senderId FROM messages WHERE id = ?',
+		).get(messageId);
+
+		if (!message) {
+			return res.status(404).json({ message: 'Message not found' });
+		}
+
+		if (String(message.senderId) === String(req.user.id)) {
+			return res.status(400).json({ message: 'You cannot report your own message' });
+		}
+
+		// Verify the reporter has access to this conversation.
+		if (message.channelId) {
+			const access = canAccessChannel(message.channelId, req.user.id, getUserRole(req.user.id));
+			if (!access.allowed) {
+				return res.status(403).json({ message: 'Access denied' });
+			}
+		} else if (message.groupChatId) {
+			const { canAccessGroupChat } = await import('../models/GroupChat.js');
+			const access = canAccessGroupChat(message.groupChatId, req.user.id);
+			if (!access.allowed) {
+				return res.status(403).json({ message: 'Access denied' });
+			}
+		} else if (message.recipientId) {
+			const isParticipant =
+				String(message.recipientId) === String(req.user.id) ||
+				String(message.senderId) === String(req.user.id);
+			if (!isParticipant) {
+				return res.status(403).json({ message: 'Access denied' });
+			}
+		}
+
+		const existing = db
+			.prepare('SELECT id FROM message_reports WHERE messageId = ? AND reporterId = ?')
+			.get(messageId, req.user.id);
+		if (existing) {
+			return res.status(409).json({ message: 'You have already reported this message' });
+		}
+
+		db.prepare(
+			'INSERT INTO message_reports (messageId, reporterId, reason, content) VALUES (?, ?, ?, ?)',
+		).run(messageId, req.user.id, String(reason).slice(0, 500), String(content).slice(0, 4000));
+
+		return res.status(201).json({ message: 'Report submitted' });
+	} catch (error) {
+		console.error('Report message error:', error);
 		return res.status(500).json({ message: 'Server error' });
 	}
 });

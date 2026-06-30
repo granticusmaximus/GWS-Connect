@@ -61,6 +61,21 @@ export default function AdminPanel() {
 	const [processingResetRequestId, setProcessingResetRequestId] = useState<
 		number | null
 	>(null);
+	const [reports, setReports] = useState<{
+		id: number;
+		messageId: number;
+		reason: string;
+		content: string;
+		status: string;
+		createdAt: string;
+		channelId?: number;
+		recipientId?: number;
+		groupChatId?: number;
+		reporterUsername: string;
+		reporterAvatar?: string;
+		senderUsername?: string;
+	}[]>([]);
+	const [actioningReportId, setActioningReportId] = useState<number | null>(null);
 
 	useEffect(() => {
 		if (user?.role === 'admin') {
@@ -70,14 +85,16 @@ export default function AdminPanel() {
 
 	const loadData = async () => {
 		try {
-			const [usersRes, channelsRes, resetRequestsRes] = await Promise.all([
+			const [usersRes, channelsRes, resetRequestsRes, reportsRes] = await Promise.all([
 				axios.get(`${API_URL}/admin/users`),
 				axios.get(`${API_URL}/admin/channels/pending`),
 				axios.get(`${API_URL}/admin/password-reset-requests`),
+				axios.get(`${API_URL}/admin/reports`),
 			]);
 			setUsers(usersRes.data);
 			setPendingChannels(channelsRes.data);
 			setPasswordResetRequests(resetRequestsRes.data);
+			setReports(reportsRes.data);
 		} catch (error) {
 			console.error('Admin panel load error:', error);
 		} finally {
@@ -193,6 +210,19 @@ export default function AdminPanel() {
 			alert('Failed to delete user');
 		} finally {
 			setDeletingUserId(null);
+		}
+	};
+
+	const actionReport = async (reportId: number, action: 'review' | 'dismiss') => {
+		setActioningReportId(reportId);
+		try {
+			await axios.post(`${API_URL}/admin/reports/${reportId}/${action}`);
+			setReports((prev) => prev.filter((r) => r.id !== reportId));
+		} catch (error) {
+			console.error('Report action error:', error);
+			alert('Failed to action report');
+		} finally {
+			setActioningReportId(null);
 		}
 	};
 
@@ -434,6 +464,57 @@ export default function AdminPanel() {
 						</tbody>
 					</table>
 				</div>
+			</section>
+			<section className="mb-8">
+				<h2 className="text-lg sm:text-2xl font-semibold mb-4 text-gray-900 dark:text-white">
+					Message Reports {reports.length > 0 && <span className="ml-2 rounded-full bg-red-100 dark:bg-red-900/40 px-2 py-0.5 text-sm font-medium text-red-700 dark:text-red-300">{reports.length}</span>}
+				</h2>
+				{reports.length === 0 ? (
+					<p className="text-sm text-gray-500 dark:text-gray-400">No pending reports.</p>
+				) : (
+					<div className="space-y-4">
+						{reports.map((report) => (
+							<div key={report.id} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-2">
+								<div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+									<span className="font-medium text-gray-900 dark:text-white">{report.reporterUsername}</span>
+									<span>reported a message</span>
+									{report.senderUsername && <span>from <span className="font-medium text-gray-700 dark:text-gray-300">{report.senderUsername}</span></span>}
+									<span>·</span>
+									<span>{new Date(report.createdAt).toLocaleString()}</span>
+									{report.channelId && <span>· Channel #{report.channelId}</span>}
+									{report.groupChatId && <span>· Group chat</span>}
+									{report.recipientId && <span>· Direct message</span>}
+								</div>
+								{report.reason && (
+									<p className="text-sm text-gray-600 dark:text-gray-300">
+										<span className="font-medium">Reason:</span> {report.reason}
+									</p>
+								)}
+								<div className="rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-3 py-2 text-sm text-gray-800 dark:text-gray-200 break-words">
+									{report.content || <em className="text-gray-400">No content</em>}
+								</div>
+								<div className="flex gap-2 pt-1">
+									<button
+										type="button"
+										onClick={() => void actionReport(report.id, 'review')}
+										disabled={actioningReportId === report.id}
+										className="rounded-lg bg-primary-600 hover:bg-primary-700 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+									>
+										Mark reviewed
+									</button>
+									<button
+										type="button"
+										onClick={() => void actionReport(report.id, 'dismiss')}
+										disabled={actioningReportId === report.id}
+										className="rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-60"
+									>
+										Dismiss
+									</button>
+								</div>
+							</div>
+						))}
+					</div>
+				)}
 			</section>
 
 			{isAddUserOpen && (

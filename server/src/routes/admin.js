@@ -465,4 +465,68 @@ router.delete('/users/:userId', authenticateToken, requireAdmin, (req, res) => {
 	}
 });
 
+router.get('/reports', authenticateToken, requireAdmin, (req, res) => {
+	try {
+		const reports = db
+			.prepare(
+				`SELECT
+          mr.id, mr.messageId, mr.reason, mr.content, mr.status, mr.createdAt,
+          m.channelId, m.recipientId, m.groupChatId,
+          reporter.id as reporterId, reporter.username as reporterUsername, reporter.avatar as reporterAvatar,
+          sender.id as senderId, sender.username as senderUsername
+         FROM message_reports mr
+         JOIN users reporter ON reporter.id = mr.reporterId
+         LEFT JOIN messages m ON m.id = mr.messageId
+         LEFT JOIN users sender ON sender.id = m.senderId
+         WHERE mr.status = 'pending'
+         ORDER BY mr.createdAt DESC`,
+			)
+			.all();
+		res.json(reports);
+	} catch (error) {
+		console.error('Error fetching reports:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.post('/reports/:reportId/review', authenticateToken, requireAdmin, (req, res) => {
+	try {
+		const result = db
+			.prepare(
+				`UPDATE message_reports
+         SET status = 'reviewed', reviewedBy = ?, reviewedAt = CURRENT_TIMESTAMP
+         WHERE id = ? AND status = 'pending'`,
+			)
+			.run(req.user.id, req.params.reportId);
+
+		if (result.changes === 0) {
+			return res.status(404).json({ message: 'Report not found or already actioned' });
+		}
+		res.json({ message: 'Report marked as reviewed' });
+	} catch (error) {
+		console.error('Error reviewing report:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.post('/reports/:reportId/dismiss', authenticateToken, requireAdmin, (req, res) => {
+	try {
+		const result = db
+			.prepare(
+				`UPDATE message_reports
+         SET status = 'dismissed', reviewedBy = ?, reviewedAt = CURRENT_TIMESTAMP
+         WHERE id = ? AND status = 'pending'`,
+			)
+			.run(req.user.id, req.params.reportId);
+
+		if (result.changes === 0) {
+			return res.status(404).json({ message: 'Report not found or already actioned' });
+		}
+		res.json({ message: 'Report dismissed' });
+	} catch (error) {
+		console.error('Error dismissing report:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
 export default router;

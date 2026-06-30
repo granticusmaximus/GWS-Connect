@@ -17,6 +17,7 @@ import PollCard from './PollCard'
 import ChatFilesPanel from './ChatFilesPanel'
 import DocumentPreview from './DocumentPreview'
 import MessageAttachment from './MessageAttachment'
+import ReportMessageModal from './ReportMessageModal'
 import {
   ClockIcon,
   ExclamationTriangleIcon,
@@ -271,6 +272,7 @@ export default function ChatWindow() {
     name?: string
     mime?: string
   } | null>(null)
+  const [reportingMessage, setReportingMessage] = useState<ChatMessage | null>(null)
   const profileCardOpenTimeoutRef = useRef<number | null>(null)
   const profileCardCloseTimeoutRef = useRef<number | null>(null)
   const highlightTimeoutRef = useRef<number | null>(null)
@@ -1225,6 +1227,16 @@ export default function ChatWindow() {
                         </button>
                       )}
 
+                      {hoveredMessageId === message.id && !isOwn && !isDeleted && (
+                        <button
+                          type="button"
+                          onClick={() => setReportingMessage(message)}
+                          className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-600 transition hover:bg-red-50 hover:border-red-300 hover:text-red-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-red-900/20 dark:hover:border-red-700 dark:hover:text-red-400"
+                        >
+                          Report
+                        </button>
+                      )}
+
                       {openReactionMessageId === message.id && (
                         <div className="flex flex-wrap gap-2">
                           {reactionOptions.map((reaction) => {
@@ -1901,6 +1913,13 @@ export default function ChatWindow() {
             </div>
           </div>
         </div>
+      )}
+
+      {reportingMessage && (
+        <ReportMessageModal
+          message={reportingMessage}
+          onClose={() => setReportingMessage(null)}
+        />
       )}
 
       {/* Edit Channel Modal */}
