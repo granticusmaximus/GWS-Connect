@@ -599,42 +599,15 @@ db.prepare(
    WHERE avatar IS NULL OR TRIM(avatar) = ''`,
 ).run(DEFAULT_AVATAR);
 
-const ftsTableExists = db
-	.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'")
-	.get();
-
-if (!ftsTableExists) {
-	db.exec(`
-    CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='id');
-
-    INSERT INTO messages_fts(rowid, content)
-      SELECT id, CASE WHEN isEncrypted = 0 THEN content ELSE '' END FROM messages;
-  `);
-}
-
-// Triggers are redefined on every boot (DROP + CREATE) so schema fixes apply
-// to existing databases, not just freshly created ones.
+// FTS5 full-text search was removed because all messages are now E2EE
+// (server never has access to decrypted content). The virtual table and
+// triggers are dropped if they exist from a previous install so they no
+// longer add overhead to every message INSERT/DELETE/UPDATE.
 db.exec(`
   DROP TRIGGER IF EXISTS messages_fts_ai;
   DROP TRIGGER IF EXISTS messages_fts_ad;
   DROP TRIGGER IF EXISTS messages_fts_au;
-
-  CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content)
-      VALUES (new.id, CASE WHEN new.isEncrypted = 0 THEN new.content ELSE '' END);
-  END;
-
-  CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content)
-      VALUES('delete', old.id, CASE WHEN old.isEncrypted = 0 THEN old.content ELSE '' END);
-  END;
-
-  CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content)
-      VALUES('delete', old.id, CASE WHEN old.isEncrypted = 0 THEN old.content ELSE '' END);
-    INSERT INTO messages_fts(rowid, content)
-      VALUES (new.id, CASE WHEN new.isEncrypted = 0 THEN new.content ELSE '' END);
-  END;
+  DROP TABLE IF EXISTS messages_fts;
 `);
 
 console.log('SQLite database initialized at:', dbPath);

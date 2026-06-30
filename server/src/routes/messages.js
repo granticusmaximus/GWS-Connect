@@ -23,7 +23,6 @@ import {
 	getPinnedMessages,
 	getReplyContextsByMessageIds,
 	markDirectConversationVisited,
-	searchMessages,
 	setDirectMessageSettings,
 	syncMessageMentions,
 	updateMessageFileInfo,
@@ -271,47 +270,6 @@ router.post(
 		}
 	},
 );
-
-router.get('/search', authenticateToken, async (req, res) => {
-	try {
-		const query = String(req.query.q || '').trim();
-		const { channelId, recipientId, groupChatId } = req.query;
-
-		if (query.length < 2) {
-			return res.status(400).json({ message: 'Search query must be at least 2 characters' });
-		}
-
-		if (channelId) {
-			const access = canAccessChannel(channelId, req.user.id, getUserRole(req.user.id));
-			if (!access.channel) {
-				return res.status(404).json({ message: 'Channel not found' });
-			}
-			if (!access.allowed) {
-				return res.status(403).json({ message: access.reason });
-			}
-		} else if (groupChatId) {
-			const access = canAccessGroupChat(groupChatId, req.user.id);
-			if (!access.groupChat) {
-				return res.status(404).json({ message: 'Group chat not found' });
-			}
-			if (!access.allowed) {
-				return res.status(403).json({ message: access.reason });
-			}
-		} else if (!recipientId) {
-			return res.status(400).json({ message: 'channelId, recipientId, or groupChatId is required' });
-		}
-
-		const messages = searchMessages(query, {
-			channelId: channelId || null,
-			recipientId: recipientId || null,
-			groupChatId: groupChatId || null,
-			currentUserId: req.user.id,
-		});
-		res.json(formatMessages(messages, req.user.id));
-	} catch (error) {
-		res.status(500).json({ message: 'Server error' });
-	}
-});
 
 router.get('/channel/:channelId/pinned', authenticateToken, async (req, res) => {
 	try {

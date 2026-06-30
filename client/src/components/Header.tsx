@@ -265,6 +265,9 @@ export default function Header({ onMenuClick, isSidebarOpen = false }: HeaderPro
                       Go
                     </button>
                   </form>
+                  <div className="px-4 pt-2 pb-1 text-xs text-gray-400 dark:text-gray-500">
+                    Searches messages loaded in this session
+                  </div>
                   <div className="max-h-96 overflow-y-auto">
                     {isSearching ? (
                       <div className="px-4 py-6 text-sm text-gray-500 dark:text-gray-400">Searching...</div>

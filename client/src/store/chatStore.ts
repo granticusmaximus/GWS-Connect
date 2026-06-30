@@ -1496,24 +1496,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
     },
 
-    searchMessages: async (chatType, chatId, query) => {
-        try {
-            const token = localStorage.getItem('token')
-            const param = chatType === 'channel'
-                ? `channelId=${chatId}`
-                : chatType === 'group'
-                    ? `groupChatId=${chatId}`
-                    : `recipientId=${chatId}`
-            const response = await axios.get(`${API_URL}/messages/search?q=${encodeURIComponent(query)}&${param}`, {
-                headers: { Authorization: `Bearer ${token}` }
-            })
-            return await Promise.all(
-                response.data.map((message: Message) => processIncomingMessage(message))
-            )
-        } catch (error) {
-            console.error('Error searching messages:', error)
-            return []
-        }
+    searchMessages: async (_chatType, chatId, query) => {
+        // All messages are E2EE so server-side FTS search is no longer
+        // possible - the server never has access to decrypted content.
+        // Search the already-decrypted messages in local state instead.
+        // Trade-off: only finds messages loaded in the current session,
+        // not full history. Disclosed in the search UI.
+        const loaded = get().messages[chatId] || []
+        const lower = query.toLowerCase()
+        return loaded.filter(
+            (message) =>
+                !message.isDeleted &&
+                typeof message.content === 'string' &&
+                message.content.toLowerCase().includes(lower)
+        )
     },
 
     setActiveChannel: (channelId: string | null) => {
