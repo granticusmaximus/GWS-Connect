@@ -47,20 +47,15 @@ router.get('/profile/:userId', authenticateToken, async (req, res) => {
 // Update user profile
 router.put('/profile', authenticateToken, async (req, res) => {
 	try {
-		console.log('Profile update request from user:', req.user);
-		console.log('Update data:', req.body);
-
 		const updates = req.body;
 		delete updates.password; // Don't allow password update through this route
 		delete updates.email; // Don't allow email update
 
 		const user = updateUser(req.user.id, updates);
 		if (!user) {
-			console.error('User not found:', req.user.id);
 			return res.status(404).json({ message: 'User not found' });
 		}
 
-		console.log('Profile updated successfully:', user);
 		res.json(sanitizeUser(user));
 	} catch (error) {
 		console.error('Profile update error:', error);

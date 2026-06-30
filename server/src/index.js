@@ -7,7 +7,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
-import './database.js';
+import db from './database.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import channelRoutes from './routes/channels.js';
@@ -742,7 +742,6 @@ io.on('connection', async (socket) => {
 			} else if (channelId) {
 				// Send to channel
 				io.to(`channel:${channelId}`).emit('message', message);
-				console.log(`Message sent to channel ${channelId}:`, message);
 
 				const { findChannelById, getChannelMembers } =
 					await import('./models/Channel.js');
@@ -790,7 +789,6 @@ io.on('connection', async (socket) => {
 				// Send to specific user (DM)
 				io.to(recipientId).emit('message', message);
 				socket.emit('message', message);
-				console.log(`DM sent to user ${recipientId}:`, message);
 
 				await sendPushToUser(recipientId, {
 					title: 'GWS Connect',
@@ -1624,11 +1622,8 @@ io.on('connection', async (socket) => {
 		}
 	});
 
-	// Handle file messages
-	socket.on('file-message', async (data) => {
-		// File handling logic here
-		console.log('File message received:', data);
-	});
+	// File messages are handled by the HTTP /api/messages/upload route.
+	// This socket event is intentionally a no-op (kept for forward-compat).
 
 	// Handle WebRTC call signaling
 	socket.on('call:join', async (data, callback) => {
@@ -1816,6 +1811,36 @@ const sweepExpiredMessages = async () => {
 };
 
 setInterval(() => void sweepExpiredMessages(), DISAPPEARING_MESSAGE_SWEEP_INTERVAL_MS);
+
+// Purge old metadata that no longer serves any purpose:
+//   - Revoked sessions: IP/UA data kept for 30 days after revocation, then deleted.
+//   - Resolved/dismissed password reset requests: kept for 90 days, then deleted.
+// Runs every 24 hours - no need for the frequent message-sweep cadence.
+const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+const sweepStaleMetadata = () => {
+	try {
+		db.prepare(
+			`DELETE FROM user_sessions
+       WHERE revokedAt IS NOT NULL
+         AND revokedAt < datetime('now', '-30 days')`,
+		).run();
+		db.prepare(
+			`DELETE FROM password_reset_requests
+       WHERE status != 'pending'
+         AND requestedAt < datetime('now', '-90 days')`,
+		).run();
+	} catch (error) {
+		console.error('Retention sweep error:', error);
+	}
+};
+
+// Run once shortly after startup so stale rows don't linger if the server
+// was down for a while, then on the 24-hour cadence.
+setTimeout(() => {
+	sweepStaleMetadata();
+	setInterval(sweepStaleMetadata, RETENTION_SWEEP_INTERVAL_MS);
+}, 60 * 1000);
 
 process.on('unhandledRejection', (error) => {
 	const logMessage = async () => {
