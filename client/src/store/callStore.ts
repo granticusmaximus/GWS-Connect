@@ -24,7 +24,7 @@ interface PeerEntry {
 
 interface CallState {
     activeCallId: string | null
-    activeChatType: 'channel' | 'dm' | 'group' | null
+    activeChatType: 'channel' | 'dm' | 'group' | 'voice' | null
     activeChatId: string | null
     localStream: MediaStream | null
     participants: Record<string, CallParticipant>
@@ -33,7 +33,7 @@ interface CallState {
     isCameraOff: boolean
     isScreenSharing: boolean
     isConnecting: boolean
-    startCall: (chatType: 'channel' | 'dm' | 'group', chatId: string, withVideo: boolean) => Promise<void>
+    startCall: (chatType: 'channel' | 'dm' | 'group' | 'voice', chatId: string, withVideo: boolean) => Promise<void>
     acceptIncomingCall: () => Promise<void>
     declineIncomingCall: () => void
     leaveCall: () => void
@@ -105,12 +105,16 @@ export const useCallStore = create<CallState>((set, get) => ({
             return
         }
 
+        if (get().activeCallId) {
+            get().leaveCall()
+        }
+
         set({ isConnecting: true })
 
         try {
             const localStream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
-                video: true,
+                video: withVideo,
             })
             cameraTrack = localStream.getVideoTracks()[0] || null
             if (cameraTrack) {

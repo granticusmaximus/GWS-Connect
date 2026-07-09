@@ -1,5 +1,5 @@
 import { BookmarkSlashIcon } from '@heroicons/react/24/outline'
-import type { Message as ChatMessage } from '../store/chatStore'
+import type { Message as ChatMessage, WorkspaceEmoji } from '../store/chatStore'
 import { renderMarkdownInline } from '../utils/renderMarkdown'
 import { getReplyPreviewText } from '../utils/replies'
 
@@ -8,11 +8,12 @@ interface BookmarksPanelProps {
   onOpenMessage: (message: ChatMessage) => void
   onRemoveBookmark: (message: ChatMessage) => void
   resolveContextLabel: (message: ChatMessage) => string
+  workspaceEmoji?: WorkspaceEmoji[]
 }
 
-const buildPreviewHtml = (message: ChatMessage) => {
+const buildPreviewHtml = (message: ChatMessage, workspaceEmoji: WorkspaceEmoji[]) => {
   const previewText = getReplyPreviewText(message)
-  return renderMarkdownInline(previewText)
+  return renderMarkdownInline(previewText, workspaceEmoji)
 }
 
 export default function BookmarksPanel({
@@ -20,6 +21,7 @@ export default function BookmarksPanel({
   onOpenMessage,
   onRemoveBookmark,
   resolveContextLabel,
+  workspaceEmoji = [],
 }: BookmarksPanelProps) {
   if (messages.length === 0) {
     return (
@@ -68,7 +70,7 @@ export default function BookmarksPanel({
             >
               <div
                 className="chat-markdown text-sm text-gray-700 dark:text-gray-200"
-                dangerouslySetInnerHTML={{ __html: buildPreviewHtml(message) }}
+                dangerouslySetInnerHTML={{ __html: buildPreviewHtml(message, workspaceEmoji) }}
               />
             </button>
           </div>

@@ -63,6 +63,15 @@ code {
 .chat-markdown del,
 .chat-markdown s  { text-decoration: line-through; }
 
+.chat-markdown .chat-custom-emoji {
+  display: inline-block;
+  width: 1.35em;
+  height: 1.35em;
+  margin: 0 0.08em;
+  vertical-align: text-bottom;
+  object-fit: contain;
+}
+
 /* Inline code */
 .chat-markdown :not(pre) > code {
   font-family: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, monospace;
@@ -184,4 +193,3 @@ code {
     @apply grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4;
   }
 }
-

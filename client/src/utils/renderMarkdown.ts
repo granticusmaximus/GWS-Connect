@@ -1,5 +1,6 @@
 import { marked } from 'marked'
 import DOMPurify, { type Config } from 'dompurify'
+import type { WorkspaceEmoji } from '../store/chatStore'
 
 marked.use({
   breaks: true,
@@ -21,17 +22,48 @@ const PURIFY_CONFIG: Config = {
     'blockquote',
     'h1', 'h2', 'h3',
     'hr', 'a', 'span',
+    'img',
   ],
-  ALLOWED_ATTR: ['href', 'title', 'target', 'rel'],
+  ALLOWED_ATTR: ['href', 'title', 'target', 'rel', 'src', 'alt', 'class'],
+}
+
+const emojiPattern = /:([a-z0-9_+\-]{2,32}):/gi
+
+const replaceWorkspaceEmoji = (
+  text: string,
+  workspaceEmoji: WorkspaceEmoji[] = [],
+) => {
+  if (!workspaceEmoji.length || !text.includes(':')) {
+    return text
+  }
+
+  const emojiMap = new Map(
+    workspaceEmoji.map((emoji) => [emoji.name.toLowerCase(), emoji.imageUrl]),
+  )
+
+  return text.replace(emojiPattern, (match, name: string) => {
+    const imageUrl = emojiMap.get(String(name).toLowerCase())
+    if (!imageUrl) {
+      return match
+    }
+
+    return `<img src="${encodeURI(imageUrl)}" alt=":${name}:" title=":${name}:" class="chat-custom-emoji" />`
+  })
 }
 
 /** Full block-level markdown: paragraphs, code fences, lists, headings. */
-export function renderMarkdown(text: string): string {
-  return DOMPurify.sanitize(marked.parse(text) as string, PURIFY_CONFIG) as string
+export function renderMarkdown(text: string, workspaceEmoji: WorkspaceEmoji[] = []): string {
+  return DOMPurify.sanitize(
+    marked.parse(replaceWorkspaceEmoji(text, workspaceEmoji)) as string,
+    PURIFY_CONFIG,
+  ) as string
 }
 
 /** Inline-only markdown: bold, italic, inline code, strikethrough. Used within text
  *  segments that are interleaved with @mention React components. */
-export function renderMarkdownInline(text: string): string {
-  return DOMPurify.sanitize(marked.parseInline(text) as string, PURIFY_CONFIG) as string
+export function renderMarkdownInline(text: string, workspaceEmoji: WorkspaceEmoji[] = []): string {
+  return DOMPurify.sanitize(
+    marked.parseInline(replaceWorkspaceEmoji(text, workspaceEmoji)) as string,
+    PURIFY_CONFIG,
+  ) as string
 }

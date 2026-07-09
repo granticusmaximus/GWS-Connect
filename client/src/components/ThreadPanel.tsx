@@ -1,6 +1,6 @@
 import { XMarkIcon } from '@heroicons/react/24/outline'
 import type { ReactNode } from 'react'
-import type { Message as ChatMessage } from '../store/chatStore'
+import type { Message as ChatMessage, WorkspaceEmoji } from '../store/chatStore'
 import { renderMarkdownInline } from '../utils/renderMarkdown'
 import { getReplyPreviewText } from '../utils/replies'
 
@@ -11,10 +11,12 @@ interface ThreadPanelProps {
   messages: ChatMessage[]
   onClose: () => void
   onJumpToMessage: (messageId: string) => void
+  workspaceEmoji?: WorkspaceEmoji[]
   footer?: ReactNode
 }
 
-const buildPreview = (message: ChatMessage) => renderMarkdownInline(getReplyPreviewText(message))
+const buildPreview = (message: ChatMessage, workspaceEmoji: WorkspaceEmoji[]) =>
+  renderMarkdownInline(getReplyPreviewText(message), workspaceEmoji)
 
 export default function ThreadPanel({
   isOpen,
@@ -23,6 +25,7 @@ export default function ThreadPanel({
   messages,
   onClose,
   onJumpToMessage,
+  workspaceEmoji = [],
   footer,
 }: ThreadPanelProps) {
   const rootMessage = messages.find((message) => message.id === threadRootMessageId) || messages[0] || null
@@ -88,7 +91,7 @@ export default function ThreadPanel({
                   </div>
                   <div
                     className="chat-markdown mt-2 text-sm text-gray-700 dark:text-gray-200"
-                    dangerouslySetInnerHTML={{ __html: buildPreview(message) }}
+                    dangerouslySetInnerHTML={{ __html: buildPreview(message, workspaceEmoji) }}
                   />
                 </button>
               )

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useMemo, useState, Fragment, useCal
 import { useDropzone } from 'react-dropzone'
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
-import { useChatStore, type Message as ChatMessage, type ReplyContext } from '../store/chatStore'
+import { useChatStore, type Message as ChatMessage, type ReplyContext, type WorkspaceEmoji } from '../store/chatStore'
 import { useCallStore } from '../store/callStore'
 import { usePreferencesStore } from '../store/preferencesStore'
 import { API_URL } from '../config/runtime'
@@ -112,6 +112,7 @@ function RenderMessage({
   onMentionClick,
   onMentionHoverStart,
   onMentionHoverEnd,
+  workspaceEmoji = [],
 }: {
   content: string
   isOwn: boolean
@@ -119,6 +120,7 @@ function RenderMessage({
   onMentionClick: (mention: MentionLinkTarget) => void
   onMentionHoverStart?: (event: MouseEvent<HTMLButtonElement>, mention: MentionLinkTarget) => void
   onMentionHoverEnd?: () => void
+  workspaceEmoji?: WorkspaceEmoji[]
 }) {
   const parts = parseMentions(content, mentions)
   const hasMentionParts = parts.some((p) => p.type === 'mention')
@@ -128,7 +130,7 @@ function RenderMessage({
     return (
       <div
         className={`chat-markdown${isOwn ? ' chat-markdown-own' : ''}`}
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(content, workspaceEmoji) }}
       />
     )
   }
@@ -173,7 +175,7 @@ function RenderMessage({
         return (
           <span
             key={index}
-            dangerouslySetInnerHTML={{ __html: renderMarkdownInline(part.content) }}
+            dangerouslySetInnerHTML={{ __html: renderMarkdownInline(part.content, workspaceEmoji) }}
           />
         )
       })}
@@ -270,6 +272,7 @@ export default function ChatWindow() {
     loadBookmarkedMessages,
     loadThreadMessages,
     markConversationVisited,
+    workspaceEmoji,
   } = useChatStore()
   const { activeCallId, isConnecting, startCall } = useCallStore()
   const user = useAuthStore((state) => state.user)
