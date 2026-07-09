@@ -114,6 +114,10 @@ export const updateUser = (id, updates) => {
 		fields.push('theme = ?');
 		values.push(updates.theme);
 	}
+	if (updates.appearOffline !== undefined) {
+		fields.push('appearOffline = ?');
+		values.push(updates.appearOffline ? 1 : 0);
+	}
 	if (updates.e2eePublicKey !== undefined) {
 		fields.push('e2eePublicKey = ?');
 		values.push(updates.e2eePublicKey);
@@ -200,6 +204,7 @@ export const anonymizeUser = (id) => {
       e2eeIv = NULL,
       role = 'user',
       mustChangePassword = 0,
+      appearOffline = 0,
       twoFactorEnabled = 0,
       twoFactorSecret = NULL,
       pendingTwoFactorSecret = NULL,

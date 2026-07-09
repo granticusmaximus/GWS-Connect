@@ -36,6 +36,7 @@ db.exec(`
     e2eeSalt TEXT,
     e2eeIv TEXT,
     theme TEXT DEFAULT 'light' CHECK(theme IN ('light', 'dark')),
+    appearOffline INTEGER DEFAULT 0 CHECK(appearOffline IN (0, 1)),
     interests TEXT DEFAULT '[]',
     socialLinks TEXT DEFAULT '{}',
     contactInfo TEXT DEFAULT '{}',
@@ -364,6 +365,12 @@ if (!userColumns.includes('twoFactorSecret')) {
 if (!userColumns.includes('pendingTwoFactorSecret')) {
 	db.prepare(
 		'ALTER TABLE users ADD COLUMN pendingTwoFactorSecret TEXT',
+	).run();
+}
+
+if (!userColumns.includes('appearOffline')) {
+	db.prepare(
+		'ALTER TABLE users ADD COLUMN appearOffline INTEGER DEFAULT 0',
 	).run();
 }
 

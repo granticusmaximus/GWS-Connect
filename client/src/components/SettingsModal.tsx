@@ -21,7 +21,7 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
   const setTimeFormat = usePreferencesStore((state) => state.setTimeFormat)
   const setDateFormat = usePreferencesStore((state) => state.setDateFormat)
   const { autoCloseSidebarOnSelect, setAutoCloseSidebar } = useThemeStore()
-  const { user, deleteAccount } = useAuthStore()
+  const { user, deleteAccount, updateProfile } = useAuthStore()
   const navigate = useNavigate()
 
   const [pushEnabled, setPushEnabled] = useState(false)
@@ -29,6 +29,9 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
   const [localTimeFormat, setLocalTimeFormat] = useState(timeFormat)
   const [localDateFormat, setLocalDateFormat] = useState(dateFormat)
   const [localAutoCloseSidebar, setLocalAutoCloseSidebar] = useState(autoCloseSidebarOnSelect)
+  const [localAppearOffline, setLocalAppearOffline] = useState(Boolean(user?.appearOffline))
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
 
   const twoFactorEnabled = !!user?.twoFactorEnabled
   const [twoFactorStep, setTwoFactorStep] = useState<'idle' | 'setup' | 'backup-codes' | 'disable'>('idle')
@@ -81,10 +84,15 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
 
   useEffect(() => {
     if (isOpen) {
+      setLocalTimeFormat(timeFormat)
+      setLocalDateFormat(dateFormat)
+      setLocalAutoCloseSidebar(autoCloseSidebarOnSelect)
+      setLocalAppearOffline(Boolean(user?.appearOffline))
+      setSettingsError(null)
       void loadSessions()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen])
+  }, [isOpen, timeFormat, dateFormat, autoCloseSidebarOnSelect, user?.appearOffline])
 
   const revokeSession = async (sessionId: number) => {
     setRevokingSessionId(sessionId)
@@ -232,10 +240,24 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
   }
 
   const handleSave = async () => {
-    setTimeFormat(localTimeFormat)
-    setDateFormat(localDateFormat)
-    setAutoCloseSidebar(localAutoCloseSidebar)
-    onClose()
+    setSettingsSaving(true)
+    setSettingsError(null)
+
+    try {
+      if (Boolean(user?.appearOffline) !== localAppearOffline) {
+        await updateProfile({ appearOffline: localAppearOffline ? 1 : 0 })
+      }
+
+      setTimeFormat(localTimeFormat)
+      setDateFormat(localDateFormat)
+      setAutoCloseSidebar(localAutoCloseSidebar)
+      onClose()
+    } catch (error) {
+      console.error('Settings save error:', error)
+      setSettingsError('Failed to save settings. Please try again.')
+    } finally {
+      setSettingsSaving(false)
+    }
   }
 
   if (!isOpen) return null
@@ -331,6 +353,35 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
                 <span
                   className={`block h-5 w-5 bg-white rounded-full shadow transform transition ${
                     localAutoCloseSidebar ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </span>
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">Appear offline</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Hide your online indicator from other users while staying connected.
+              </p>
+            </div>
+            <label className="inline-flex items-center cursor-pointer pointer-events-auto min-h-10 min-w-12 flex-shrink-0">
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={localAppearOffline}
+                onChange={(e) => setLocalAppearOffline(e.target.checked)}
+                aria-label="Toggle appear offline"
+              />
+              <span
+                className={`w-11 h-6 rounded-full transition-colors ${
+                  localAppearOffline ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'
+                }`}
+              >
+                <span
+                  className={`block h-5 w-5 bg-white rounded-full shadow transform transition ${
+                    localAppearOffline ? 'translate-x-5' : 'translate-x-0.5'
                   }`}
                 />
               </span>
@@ -709,18 +760,26 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
           </div>
         </div>
 
+        {settingsError && (
+          <div className="mt-4 rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-600 dark:text-red-400">
+            {settingsError}
+          </div>
+        )}
+
         <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sticky bottom-0 bg-white dark:bg-gray-900 -m-6 mt-6 p-6 pt-4 border-t border-gray-200 dark:border-gray-700 pointer-events-auto">
           <button
             onClick={onClose}
             className="px-4 py-3 sm:py-2 rounded-lg border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors min-h-12 sm:min-h-auto font-medium tap-highlight-none pointer-events-auto"
+            disabled={settingsSaving}
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
             className="px-4 py-3 sm:py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white transition-colors min-h-12 sm:min-h-auto font-medium tap-highlight-none pointer-events-auto"
+            disabled={settingsSaving}
           >
-            Save
+            {settingsSaving ? 'Saving...' : 'Save'}
           </button>
         </div>
       </div>

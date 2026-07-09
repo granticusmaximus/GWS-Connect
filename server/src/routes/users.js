@@ -7,6 +7,7 @@ import {
 	searchUsers,
 	getUserPublicKey,
 } from '../models/User.js';
+import { broadcastPresenceState } from '../services/presence.js';
 import db from '../database.js';
 
 const router = express.Router();
@@ -55,6 +56,14 @@ router.put('/profile', authenticateToken, async (req, res) => {
 		const user = updateUser(req.user.id, updates);
 		if (!user) {
 			return res.status(404).json({ message: 'User not found' });
+		}
+
+		if (updates.appearOffline !== undefined) {
+			broadcastPresenceState(
+				req.app.get('io'),
+				req.app.get('onlineUsers'),
+				req.app.get('userPresence'),
+			);
 		}
 
 		res.json(sanitizeUser(user));

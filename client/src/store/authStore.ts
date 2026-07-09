@@ -23,6 +23,7 @@ interface User {
     username: string
     email: string
     theme?: 'light' | 'dark'
+    appearOffline?: number | boolean
     e2eePublicKey?: JsonWebKey
     e2eeEncryptedPrivateKey?: string
     e2eeSalt?: string

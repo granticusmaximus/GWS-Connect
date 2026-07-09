@@ -34,6 +34,7 @@ import {
 	createReactionNotification,
 	createReplyNotification,
 } from './services/inAppNotifications.js';
+import { broadcastPresenceState } from './services/presence.js';
 import { sendErrorNotification } from './services/errorReporter.js';
 import { logSocketError, errorLoggingMiddleware } from './utils/logger.js';
 
@@ -200,6 +201,8 @@ app.use(errorLoggingMiddleware);
 const onlineUsers = new Map();
 const onlineSocketUsers = new Map();
 const userPresence = new Map(); // userId -> 'online' | 'idle'
+app.set('onlineUsers', onlineUsers);
+app.set('userPresence', userPresence);
 
 // WebRTC call sessions, keyed by callId.
 // callId is `channel:<channelId>` for channel calls, `group:<groupChatId>` for
@@ -231,18 +234,6 @@ const serializeParticipants = (session) =>
 		username: info.username,
 		withVideo: info.withVideo,
 	}));
-
-const broadcastPresence = () => {
-	io.emit(
-		'presence-update',
-		Object.fromEntries(
-			Array.from(onlineUsers.keys()).map((userId) => [
-				userId,
-				userPresence.get(userId) || 'online',
-			]),
-		),
-	);
-};
 
 const buildTypingPayload = ({ socket, channelId = null, groupChatId = null, chatId = null }) => {
 	const user = findUserById(socket.user.id);
@@ -391,8 +382,7 @@ io.on('connection', async (socket) => {
 		username: socket.user.username,
 	});
 	userPresence.set(socket.user.id, 'online');
-	io.emit('online-users', Array.from(onlineUsers.keys()));
-	broadcastPresence();
+	broadcastPresenceState(io, onlineUsers, userPresence);
 
 	// Join user's personal room
 	socket.join(String(socket.user.id));
@@ -1741,7 +1731,7 @@ io.on('connection', async (socket) => {
 			return;
 		}
 		userPresence.set(socket.user.id, status);
-		broadcastPresence();
+		broadcastPresenceState(io, onlineUsers, userPresence);
 	});
 
 	// Handle disconnection
@@ -1750,8 +1740,7 @@ io.on('connection', async (socket) => {
 		onlineUsers.delete(socket.user.id);
 		onlineSocketUsers.delete(socket.id);
 		userPresence.delete(socket.user.id);
-		io.emit('online-users', Array.from(onlineUsers.keys()));
-		broadcastPresence();
+		broadcastPresenceState(io, onlineUsers, userPresence);
 
 		for (const [callId, session] of callSessions.entries()) {
 			if (!session.participants.has(String(socket.user.id))) continue;

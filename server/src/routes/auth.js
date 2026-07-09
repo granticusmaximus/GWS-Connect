@@ -105,6 +105,7 @@ const buildLoginResponse = (user, req) => {
 			e2eeSalt: user.e2eeSalt,
 			e2eeIv: user.e2eeIv,
 			theme: user.theme || 'light',
+			appearOffline: user.appearOffline ? 1 : 0,
 			avatar: user.avatar,
 			banner: user.banner,
 			bio: user.bio,
