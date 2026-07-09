@@ -17,14 +17,49 @@ interface SettingsModalProps {
 }
 
 export default function SettingsModal({ isOpen, onClose, pushPermission }: SettingsModalProps) {
+  const resolveActiveDndUntil = (value?: string | null) => {
+    if (!value) {
+      return null
+    }
+
+    const dndUntil = new Date(value).getTime()
+    if (Number.isNaN(dndUntil) || dndUntil <= Date.now()) {
+      return null
+    }
+
+    return value
+  }
+
+  const resolveDndDurationMinutes = (value?: string | null) => {
+    const activeDndUntil = resolveActiveDndUntil(value)
+    if (!activeDndUntil) {
+      return '60'
+    }
+
+    const minutesRemaining = Math.max(
+      1,
+      Math.round((new Date(activeDndUntil).getTime() - Date.now()) / 60000),
+    )
+
+    if (minutesRemaining <= 90) {
+      return '60'
+    }
+    if (minutesRemaining <= 720) {
+      return '480'
+    }
+
+    return '1440'
+  }
+
   const timeFormat = usePreferencesStore((state) => state.timeFormat)
   const dateFormat = usePreferencesStore((state) => state.dateFormat)
   const setTimeFormat = usePreferencesStore((state) => state.setTimeFormat)
   const setDateFormat = usePreferencesStore((state) => state.setDateFormat)
   const { autoCloseSidebarOnSelect, setAutoCloseSidebar } = useThemeStore()
-  const { user, deleteAccount, updateProfile, updateStatus } = useAuthStore()
+  const { user, deleteAccount, updateProfile, updateStatus, updateDnd } = useAuthStore()
   const navigate = useNavigate()
   const initialStatus = getActiveCustomStatus(user)
+  const initialDndUntil = resolveActiveDndUntil(user?.dndUntil)
 
   const [pushEnabled, setPushEnabled] = useState(false)
   const [pushLoading, setPushLoading] = useState(false)
@@ -36,6 +71,10 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
   const [localStatusText, setLocalStatusText] = useState(initialStatus?.statusText || '')
   const [localStatusClearsAt, setLocalStatusClearsAt] = useState(
     toDateTimeLocalValue(initialStatus?.statusClearsAt || null),
+  )
+  const [localDndEnabled, setLocalDndEnabled] = useState(Boolean(initialDndUntil))
+  const [localDndDurationMinutes, setLocalDndDurationMinutes] = useState(
+    resolveDndDurationMinutes(initialDndUntil),
   )
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
@@ -92,6 +131,7 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
   useEffect(() => {
     if (isOpen) {
       const activeStatus = getActiveCustomStatus(user)
+      const activeDndUntil = resolveActiveDndUntil(user?.dndUntil)
       setLocalTimeFormat(timeFormat)
       setLocalDateFormat(dateFormat)
       setLocalAutoCloseSidebar(autoCloseSidebarOnSelect)
@@ -99,6 +139,8 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
       setLocalStatusEmoji(activeStatus?.statusEmoji || '')
       setLocalStatusText(activeStatus?.statusText || '')
       setLocalStatusClearsAt(toDateTimeLocalValue(activeStatus?.statusClearsAt || null))
+      setLocalDndEnabled(Boolean(activeDndUntil))
+      setLocalDndDurationMinutes(resolveDndDurationMinutes(activeDndUntil))
       setSettingsError(null)
       void loadSessions()
     }
@@ -278,6 +320,12 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
         statusEmoji,
         statusText,
         statusClearsAt: statusEmoji || statusText ? statusClearsAt : null,
+      })
+
+      await updateDnd({
+        dndUntil: localDndEnabled
+          ? new Date(Date.now() + Number(localDndDurationMinutes) * 60000).toISOString()
+          : null,
       })
 
       if (Boolean(user?.appearOffline) !== localAppearOffline) {
@@ -482,6 +530,58 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
               </p>
             </div>
           </div>
+
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">Do Not Disturb</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Suppress push notifications on this account until DND expires or you turn it off.
+              </p>
+            </div>
+            <label className="inline-flex items-center cursor-pointer pointer-events-auto min-h-10 min-w-12 flex-shrink-0">
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={localDndEnabled}
+                onChange={(e) => setLocalDndEnabled(e.target.checked)}
+                aria-label="Toggle do not disturb"
+              />
+              <span
+                className={`w-11 h-6 rounded-full transition-colors ${
+                  localDndEnabled ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'
+                }`}
+              >
+                <span
+                  className={`block h-5 w-5 bg-white rounded-full shadow transform transition ${
+                    localDndEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </span>
+            </label>
+          </div>
+
+          {localDndEnabled && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-800/60 p-4 space-y-2">
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300">
+                DND duration
+              </label>
+              <select
+                value={localDndDurationMinutes}
+                onChange={(e) => setLocalDndDurationMinutes(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                aria-label="DND duration"
+              >
+                <option value="60">1 hour</option>
+                <option value="480">8 hours</option>
+                <option value="1440">24 hours</option>
+              </select>
+              {initialDndUntil && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Currently active until {formatDateTime(new Date(initialDndUntil), dateFormat, timeFormat)}.
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>

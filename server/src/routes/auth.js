@@ -109,6 +109,7 @@ const buildLoginResponse = (user, req) => {
 			statusEmoji: user.statusEmoji || null,
 			statusText: user.statusText || null,
 			statusClearsAt: user.statusClearsAt || null,
+			dndUntil: user.dndUntil || null,
 			avatar: user.avatar,
 			banner: user.banner,
 			bio: user.bio,

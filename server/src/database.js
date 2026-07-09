@@ -40,6 +40,7 @@ db.exec(`
     statusEmoji TEXT,
     statusText TEXT,
     statusClearsAt DATETIME,
+    dndUntil DATETIME,
     interests TEXT DEFAULT '[]',
     socialLinks TEXT DEFAULT '{}',
     contactInfo TEXT DEFAULT '{}',
@@ -387,6 +388,10 @@ if (!userColumns.includes('statusText')) {
 
 if (!userColumns.includes('statusClearsAt')) {
 	db.prepare('ALTER TABLE users ADD COLUMN statusClearsAt DATETIME').run();
+}
+
+if (!userColumns.includes('dndUntil')) {
+	db.prepare('ALTER TABLE users ADD COLUMN dndUntil DATETIME').run();
 }
 
 db.exec(`

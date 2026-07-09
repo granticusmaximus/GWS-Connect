@@ -31,13 +31,32 @@ const clearExpiredStatusIfNeeded = (user) => {
 	};
 };
 
+const clearExpiredDndIfNeeded = (user) => {
+	if (!user?.dndUntil) {
+		return user;
+	}
+
+	const dndUntil = new Date(user.dndUntil).getTime();
+	if (!Number.isFinite(dndUntil) || dndUntil > Date.now()) {
+		return user;
+	}
+
+	db.prepare('UPDATE users SET dndUntil = NULL WHERE id = ?').run(user.id);
+
+	return {
+		...user,
+		dndUntil: null,
+	};
+};
+
 const normalizeUserRecord = (user) => {
 	if (!user) return null;
 	const withFreshStatus = clearExpiredStatusIfNeeded(user);
+	const withFreshDnd = clearExpiredDndIfNeeded(withFreshStatus);
 
 	return {
-		...withFreshStatus,
-		avatar: normalizeAvatar(withFreshStatus.avatar),
+		...withFreshDnd,
+		avatar: normalizeAvatar(withFreshDnd.avatar),
 	};
 };
 
@@ -153,6 +172,10 @@ export const updateUser = (id, updates) => {
 		fields.push('statusClearsAt = ?');
 		values.push(updates.statusClearsAt);
 	}
+	if (updates.dndUntil !== undefined) {
+		fields.push('dndUntil = ?');
+		values.push(updates.dndUntil);
+	}
 	if (updates.e2eePublicKey !== undefined) {
 		fields.push('e2eePublicKey = ?');
 		values.push(updates.e2eePublicKey);
@@ -243,6 +266,7 @@ export const anonymizeUser = (id) => {
       statusEmoji = NULL,
       statusText = NULL,
       statusClearsAt = NULL,
+      dndUntil = NULL,
       twoFactorEnabled = 0,
       twoFactorSecret = NULL,
       pendingTwoFactorSecret = NULL,

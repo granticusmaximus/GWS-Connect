@@ -95,6 +95,33 @@ router.put('/me/status', authenticateToken, async (req, res) => {
 	}
 });
 
+router.put('/me/dnd', authenticateToken, async (req, res) => {
+	try {
+		let dndUntil = null;
+
+		if (req.body?.dndUntil) {
+			const parsedDndUntil = new Date(req.body.dndUntil);
+			if (Number.isNaN(parsedDndUntil.getTime())) {
+				return res.status(400).json({ message: 'Invalid DND time' });
+			}
+			if (parsedDndUntil.getTime() <= Date.now()) {
+				return res.status(400).json({ message: 'DND time must be in the future' });
+			}
+			dndUntil = parsedDndUntil.toISOString();
+		}
+
+		const user = updateUser(req.user.id, { dndUntil });
+		if (!user) {
+			return res.status(404).json({ message: 'User not found' });
+		}
+
+		res.json(sanitizeUser(user));
+	} catch (error) {
+		console.error('DND update error:', error);
+		res.status(500).json({ message: 'Server error: ' + error.message });
+	}
+});
+
 // Update user profile
 router.put('/profile', authenticateToken, async (req, res) => {
 	try {

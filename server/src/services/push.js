@@ -14,8 +14,27 @@ const removeSubscription = (endpoint) => {
 	stmt.run(endpoint);
 };
 
+const isDndActive = (userId) => {
+	const user = db
+		.prepare('SELECT dndUntil FROM users WHERE id = ?')
+		.get(userId);
+
+	if (!user?.dndUntil) {
+		return false;
+	}
+
+	const dndUntil = new Date(user.dndUntil).getTime();
+	if (Number.isNaN(dndUntil) || dndUntil <= Date.now()) {
+		db.prepare('UPDATE users SET dndUntil = NULL WHERE id = ?').run(userId);
+		return false;
+	}
+
+	return true;
+};
+
 export const sendPushToUser = async (userId, payload) => {
 	if (!publicKey || !privateKey) return;
+	if (isDndActive(userId)) return;
 
 	const stmt = db.prepare(
 		'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE userId = ?',
