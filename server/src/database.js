@@ -317,6 +317,12 @@ if (!channelColumns.includes('keyGenerationRotatedAt')) {
 	).run();
 }
 
+if (!channelColumns.includes('announcementOnly')) {
+	db.prepare(
+		'ALTER TABLE channels ADD COLUMN announcementOnly INTEGER DEFAULT 0',
+	).run();
+}
+
 const messageColumns = db
 	.prepare("PRAGMA table_info('messages')")
 	.all()

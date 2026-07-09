@@ -12,6 +12,7 @@ interface Channel {
 	isPrivate?: boolean;
 	slowModeSeconds?: number;
 	disappearingMessagesSeconds?: number;
+	announcementOnly?: boolean;
 }
 
 interface ChannelModalProps {
@@ -36,6 +37,7 @@ export default function ChannelModal({
 	const [isPrivate, setIsPrivate] = useState(false);
 	const [slowModeSeconds, setSlowModeSeconds] = useState(0);
 	const [disappearingMessagesSeconds, setDisappearingMessagesSeconds] = useState(0);
+	const [announcementOnly, setAnnouncementOnly] = useState(false);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState('');
 	const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -49,12 +51,14 @@ export default function ChannelModal({
 			setIsPrivate(!!channel.isPrivate);
 			setSlowModeSeconds(channel.slowModeSeconds || 0);
 			setDisappearingMessagesSeconds(channel.disappearingMessagesSeconds || 0);
+			setAnnouncementOnly(!!channel.announcementOnly);
 		} else {
 			setName('');
 			setDescription('');
 			setIsPrivate(false);
 			setSlowModeSeconds(0);
 			setDisappearingMessagesSeconds(0);
+			setAnnouncementOnly(false);
 		}
 		setError('');
 		setShowDeleteConfirm(false);
@@ -78,7 +82,14 @@ export default function ChannelModal({
 				// Update existing channel
 				await axios.put(
 					`${API_URL}/manager/${channel.id}`,
-					{ name, description, isPrivate, slowModeSeconds, disappearingMessagesSeconds },
+					{
+						name,
+						description,
+						isPrivate,
+						slowModeSeconds,
+						disappearingMessagesSeconds,
+						announcementOnly,
+					},
 				);
 				onSuccess();
 				onClose();
@@ -290,6 +301,43 @@ export default function ChannelModal({
 								</select>
 								<p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
 									New messages in this channel will automatically delete after this duration.
+								</p>
+							</div>
+						)}
+
+						{mode === 'edit' && (
+							<div>
+								<label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+									Announcement Channel
+								</label>
+								<div className="flex items-center gap-3">
+									<button
+										type="button"
+										onClick={() => setAnnouncementOnly(false)}
+										className={`flex-1 px-3 py-2 rounded-lg border transition-colors ${
+											!announcementOnly
+												? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-200'
+												: 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+										}`}
+										disabled={loading || deleting}
+									>
+										Off
+									</button>
+									<button
+										type="button"
+										onClick={() => setAnnouncementOnly(true)}
+										className={`flex-1 px-3 py-2 rounded-lg border transition-colors ${
+											announcementOnly
+												? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-200'
+												: 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+										}`}
+										disabled={loading || deleting}
+									>
+										On
+									</button>
+								</div>
+								<p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+									Only managers and admins can post. Members can read only.
 								</p>
 							</div>
 						)}

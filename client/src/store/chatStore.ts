@@ -320,6 +320,7 @@ export interface Channel {
     description: string
     members: string[]
     isPrivate?: number | boolean
+    announcementOnly?: number | boolean
     status?: string
     unreadCount: number
     lastMessageAt: string | null

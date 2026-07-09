@@ -384,6 +384,7 @@ export default function ChatWindow() {
     if (!activeChannel || !user) return false
     return user.role === 'admin' || user.role === 'manager'
   }, [activeChannel, user])
+  const isAnnouncementChannel = Boolean(currentChannel?.announcementOnly) && !canEditChannel
   const canManageChannelMembers = canEditChannel
   const canAddChannelMembers = Boolean(
     canManageChannelMembers && activeChannel && currentChannel?.isPrivate,
@@ -1845,18 +1846,25 @@ export default function ChatWindow() {
       <>
         {renderConversationBody()}
         {activeTab === 'messages' && (
-          <MessageInput
-            channelId={activeChannel || undefined}
-            recipientId={activeDM || undefined}
-            groupChatId={activeGroupChat || undefined}
-            onSelectFile={(file) => {
-              setPendingFile(file)
-              setPendingName(file.name)
-              setPendingMessage('')
-            }}
-            replyTarget={replyTargetMessage}
-            onCancelReply={() => setReplyTargetId(null)}
-          />
+          isAnnouncementChannel ? (
+            <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+              <span>📢</span>
+              <span>This is an announcement channel. Only managers and admins can post.</span>
+            </div>
+          ) : (
+            <MessageInput
+              channelId={activeChannel || undefined}
+              recipientId={activeDM || undefined}
+              groupChatId={activeGroupChat || undefined}
+              onSelectFile={(file) => {
+                setPendingFile(file)
+                setPendingName(file.name)
+                setPendingMessage('')
+              }}
+              replyTarget={replyTargetMessage}
+              onCancelReply={() => setReplyTargetId(null)}
+            />
+          )
         )}
       </>
 

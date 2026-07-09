@@ -541,6 +541,17 @@ router.post('/', authenticateToken, async (req, res) => {
 			if (!permissionCheck.allowed) {
 				return res.status(403).json({ message: permissionCheck.reason });
 			}
+
+			const channelRow = db.prepare('SELECT announcementOnly FROM channels WHERE id = ?').get(channelId);
+			if (channelRow?.announcementOnly) {
+				const senderRole = getUserRole(req.user.id);
+				const isChannelMgr = db
+					.prepare('SELECT 1 FROM channel_managers WHERE channelId = ? AND userId = ?')
+					.get(channelId, req.user.id);
+				if (senderRole !== 'admin' && !isChannelMgr) {
+					return res.status(403).json({ message: 'This channel is for announcements only. Only managers and admins can post.' });
+				}
+			}
 		}
 
 		const replyState = resolveReplyState({

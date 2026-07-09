@@ -51,7 +51,14 @@ router.put(
 	requireChannelManagerOrAdmin('channelId'),
 	(req, res) => {
 		try {
-			const { name, description, isPrivate, slowModeSeconds, disappearingMessagesSeconds } = req.body;
+			const {
+				name,
+				description,
+				isPrivate,
+				slowModeSeconds,
+				disappearingMessagesSeconds,
+				announcementOnly,
+			} = req.body;
 			const updates = [];
 			const values = [];
 
@@ -76,6 +83,10 @@ router.put(
 				const normalizedTtl = Math.max(0, Number(disappearingMessagesSeconds) || 0);
 				updates.push('disappearingMessagesSeconds = ?');
 				values.push(normalizedTtl);
+			}
+			if (announcementOnly !== undefined) {
+				updates.push('announcementOnly = ?');
+				values.push(announcementOnly ? 1 : 0);
 			}
 
 			if (updates.length === 0) {
