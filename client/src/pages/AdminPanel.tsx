@@ -11,7 +11,7 @@ interface User {
 	id: number;
 	username: string;
 	email: string;
-	role: 'user' | 'manager' | 'admin';
+	role: 'user' | 'manager' | 'admin' | 'guest';
 	avatar?: string;
 }
 
@@ -44,6 +44,13 @@ interface AuditEvent {
 	actorId: number;
 	actorUsername: string;
 	actorAvatar?: string | null;
+}
+
+interface WorkspaceEmoji {
+	id: string;
+	name: string;
+	imageUrl: string;
+	createdAt?: string;
 }
 
 type AdminTab = 'overview' | 'reports' | 'audit';
@@ -81,7 +88,7 @@ export default function AdminPanel() {
 	const [newUser, setNewUser] = useState<{
 		username: string;
 		email: string;
-		role: 'user' | 'manager' | 'admin';
+		role: 'user' | 'manager' | 'admin' | 'guest';
 	}>({
 		username: '',
 		email: '',
@@ -119,6 +126,11 @@ export default function AdminPanel() {
 	const [actioningReportId, setActioningReportId] = useState<number | null>(
 		null,
 	);
+	const [workspaceEmoji, setWorkspaceEmoji] = useState<WorkspaceEmoji[]>([]);
+	const [emojiName, setEmojiName] = useState('');
+	const [emojiFile, setEmojiFile] = useState<File | null>(null);
+	const [uploadingEmoji, setUploadingEmoji] = useState(false);
+	const [deletingEmojiId, setDeletingEmojiId] = useState<string | null>(null);
 
 	useEffect(() => {
 		if (user?.role === 'admin') {
@@ -134,18 +146,21 @@ export default function AdminPanel() {
 				resetRequestsRes,
 				reportsRes,
 				auditRes,
+				workspaceEmojiRes,
 			] = await Promise.all([
 				axios.get(`${API_URL}/admin/users`),
 				axios.get(`${API_URL}/admin/channels/pending`),
 				axios.get(`${API_URL}/admin/password-reset-requests`),
 				axios.get(`${API_URL}/admin/reports`),
 				axios.get(`${API_URL}/admin/audit-log`, { params: { limit: 250 } }),
+				axios.get(`${API_URL}/workspace-emoji`),
 			]);
 			setUsers(usersRes.data);
 			setPendingChannels(channelsRes.data);
 			setPasswordResetRequests(resetRequestsRes.data);
 			setReports(reportsRes.data);
 			setAuditEvents(auditRes.data);
+			setWorkspaceEmoji(workspaceEmojiRes.data);
 		} catch (error) {
 			console.error('Admin panel load error:', error);
 		} finally {
@@ -267,13 +282,58 @@ export default function AdminPanel() {
 		try {
 			await axios.post(`${API_URL}/admin/reports/${reportId}/${action}`);
 			setReports((prev) => prev.filter((report) => report.id !== reportId));
-			setAuditEvents((prev) => prev);
 			await loadData();
 		} catch (error) {
 			console.error('Report action error:', error);
 			alert('Failed to action report');
 		} finally {
 			setActioningReportId(null);
+		}
+	};
+
+	const uploadWorkspaceEmoji = async () => {
+		if (!emojiName.trim() || !emojiFile) {
+			alert('Emoji name and image file are required');
+			return;
+		}
+
+		setUploadingEmoji(true);
+		try {
+			const formData = new FormData();
+			formData.append('name', emojiName.trim());
+			formData.append('file', emojiFile);
+			const response = await axios.post(`${API_URL}/workspace-emoji`, formData, {
+				headers: { 'Content-Type': 'multipart/form-data' },
+			});
+			setWorkspaceEmoji((current) =>
+				[response.data, ...current].sort((left, right) =>
+					left.name.localeCompare(right.name),
+				),
+			);
+			setEmojiName('');
+			setEmojiFile(null);
+			await loadData();
+		} catch (error) {
+			console.error('Workspace emoji upload error:', error);
+			alert('Failed to upload emoji');
+		} finally {
+			setUploadingEmoji(false);
+		}
+	};
+
+	const removeWorkspaceEmoji = async (emoji: WorkspaceEmoji) => {
+		setDeletingEmojiId(emoji.id);
+		try {
+			await axios.delete(`${API_URL}/workspace-emoji/${emoji.id}`);
+			setWorkspaceEmoji((current) =>
+				current.filter((entry) => entry.id !== emoji.id),
+			);
+			await loadData();
+		} catch (error) {
+			console.error('Workspace emoji delete error:', error);
+			alert('Failed to delete emoji');
+		} finally {
+			setDeletingEmojiId(null);
 		}
 	};
 
@@ -533,6 +593,7 @@ export default function AdminPanel() {
 														disabled={String(entry.id) === String(user?.id)}
 													>
 														<option value="user">User</option>
+														<option value="guest">Guest</option>
 														<option value="manager">Manager</option>
 														<option value="admin">Admin</option>
 													</select>
@@ -564,6 +625,78 @@ export default function AdminPanel() {
 										))}
 									</tbody>
 								</table>
+							</div>
+						</section>
+
+						<section className="mt-8">
+							<h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-white sm:text-2xl">
+								Workspace Emoji ({workspaceEmoji.length})
+							</h2>
+							<div className="rounded-xl bg-white p-4 shadow dark:bg-gray-800">
+								<div className="grid gap-3 sm:grid-cols-[minmax(0,1fr),minmax(0,1fr),auto]">
+									<input
+										type="text"
+										value={emojiName}
+										onChange={(e) => setEmojiName(e.target.value)}
+										placeholder="emoji_name"
+										className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-transparent focus:ring-2 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+									/>
+									<input
+										type="file"
+										accept="image/*"
+										onChange={(e) => setEmojiFile(e.target.files?.[0] || null)}
+										className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+									/>
+									<button
+										type="button"
+										onClick={() => void uploadWorkspaceEmoji()}
+										disabled={uploadingEmoji || !emojiName.trim() || !emojiFile}
+										className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-primary-700 disabled:opacity-60"
+									>
+										{uploadingEmoji ? 'Uploading...' : 'Upload'}
+									</button>
+								</div>
+
+								<div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+									{workspaceEmoji.length === 0 ? (
+										<div className="text-sm text-gray-500 dark:text-gray-400">
+											No custom emoji uploaded yet.
+										</div>
+									) : (
+										workspaceEmoji.map((emoji) => (
+											<div
+												key={emoji.id}
+												className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 px-3 py-3 dark:border-gray-700"
+											>
+												<div className="flex min-w-0 items-center gap-3">
+													<img
+														src={emoji.imageUrl}
+														alt={`:${emoji.name}:`}
+														className="h-8 w-8 object-contain"
+													/>
+													<div className="min-w-0">
+														<div className="truncate font-mono text-sm text-gray-900 dark:text-white">
+															:{emoji.name}:
+														</div>
+														{emoji.createdAt && (
+															<div className="text-xs text-gray-500 dark:text-gray-400">
+																{new Date(emoji.createdAt).toLocaleString()}
+															</div>
+														)}
+													</div>
+												</div>
+												<button
+													type="button"
+													onClick={() => void removeWorkspaceEmoji(emoji)}
+													disabled={deletingEmojiId === emoji.id}
+													className="rounded-lg border border-red-300 px-3 py-2 text-xs font-medium text-red-600 transition hover:bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-900/20 disabled:opacity-60"
+												>
+													{deletingEmojiId === emoji.id ? 'Deleting...' : 'Delete'}
+												</button>
+											</div>
+										))
+									)}
+								</div>
 							</div>
 						</section>
 					</>
@@ -770,7 +903,7 @@ export default function AdminPanel() {
 									onChange={(e) =>
 										setNewUser((prev) => ({
 											...prev,
-											role: e.target.value as 'user' | 'manager' | 'admin',
+											role: e.target.value as 'user' | 'guest' | 'manager' | 'admin',
 										}))
 									}
 									title="Role for new user"
@@ -778,6 +911,7 @@ export default function AdminPanel() {
 									className="min-h-12 w-full rounded-lg border border-gray-300 bg-white px-3 py-3 text-base text-gray-900 transition-colors focus:border-transparent focus:ring-2 focus:ring-primary-500 dark:border-gray-700 dark:bg-gray-800 dark:text-white sm:min-h-auto sm:py-2 sm:text-sm"
 								>
 									<option value="user">User</option>
+									<option value="guest">Guest</option>
 									<option value="manager">Manager</option>
 									<option value="admin">Admin</option>
 								</select>

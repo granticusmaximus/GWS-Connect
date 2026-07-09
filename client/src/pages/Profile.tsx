@@ -21,7 +21,7 @@ interface ProfileUser {
   avatar?: string
   banner?: string
   bio?: string
-  role?: 'user' | 'manager' | 'admin'
+  role?: 'user' | 'manager' | 'admin' | 'guest'
   interests?: string[]
   socialLinks?: {
     twitter?: string

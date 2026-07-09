@@ -35,7 +35,7 @@ interface User {
     avatar?: string
     banner?: string
     bio?: string
-    role?: 'user' | 'manager' | 'admin'
+    role?: 'user' | 'manager' | 'admin' | 'guest'
     mustChangePassword?: number | boolean
     twoFactorEnabled?: number | boolean
     interests?: string[]
