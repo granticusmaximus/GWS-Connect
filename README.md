@@ -108,6 +108,7 @@ npm run db:promote:prod    # guarded remote promotion (requires env vars)
 npm run db:sync:dev-to-prod # same flow, named as dev -> prod sync
 npm run db:remote-only-deploy # run on the production host after a staged DB is already present
 npm run db:upload-and-remote-deploy # upload local DB, then trigger the remote-only deploy automatically
+npm run db:deploy -- <mode> # single dispatcher for upload, remote, or sync
 ```
 
 Example promotion command:
@@ -135,6 +136,8 @@ If you already have the new database file on the production host and just want t
 
 If you want the local dev DB pushed over and then deployed automatically, use `db:upload-and-remote-deploy`.
 
+If you want one command that chooses the flow for you, use `db:deploy` with one of these modes: `upload`, `remote`, or `sync`.
+
 Example remote-only deploy command:
 
 ```bash
@@ -154,6 +157,14 @@ PROD_DB_PATH=/var/lib/gws-connect/gws-connect.db \
 PROD_RESTART_CMD='systemctl restart gws-connect' \
 CONFIRM=YES \
 npm run db:upload-and-remote-deploy
+```
+
+Example dispatcher commands:
+
+```bash
+npm run db:deploy -- upload
+npm run db:deploy -- remote
+npm run db:deploy -- sync
 ```
 
 If server startup fails with a `better-sqlite3` ABI/binding error, reinstall under the same Node runtime used to run the server:

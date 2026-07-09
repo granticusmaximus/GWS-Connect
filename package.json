@@ -14,6 +14,7 @@
     "db:sync:dev-to-prod": "bash scripts/db/sync-dev-to-prod.sh",
     "db:remote-only-deploy": "bash scripts/db/remote-only-deploy.sh",
     "db:upload-and-remote-deploy": "bash scripts/db/upload-and-remote-deploy.sh",
+    "db:deploy": "bash scripts/db/deploy.sh",
     "electron:dev": "node electron/dev-launcher.cjs",
     "dev:electron": "concurrently -k \"npm run dev --prefix server\" \"npm run dev --prefix client\" \"npm run electron:dev\"",
     "build:desktop": "npm run build:desktop --prefix client",
