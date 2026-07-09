@@ -13,6 +13,7 @@ import { getReplyPreviewText } from '../utils/replies'
 import { PaperAirplaneIcon, PaperClipIcon, PlusIcon, ChartBarIcon, PhotoIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import PollCreateModal from './PollCreateModal'
 import GifPickerModal from './GifPickerModal'
+import { searchEmoji, type EmojiEntry } from '../utils/emojiData'
 const TYPING_STOP_DELAY_MS = 1800
 const TYPING_KEEPALIVE_INTERVAL_MS = 1500
 
@@ -42,6 +43,24 @@ interface TypingIndicatorProps {
 }
 
 const mentionTriggerRegex = /(^|\s)@([A-Za-z0-9._-]*)$/
+
+// Matches :keyword with at least 2 chars so we don't trigger on emoticons like :)
+const emojiTriggerRegex = /(^|\s):([a-z0-9_+\-]{2,})$/
+
+interface EmojiContext {
+  start: number // index of the ':' character
+  end: number   // current cursor position
+  query: string
+}
+
+const getEmojiContext = (text: string, cursorPosition: number): EmojiContext | null => {
+  const beforeCursor = text.slice(0, cursorPosition)
+  const match = beforeCursor.match(emojiTriggerRegex)
+  if (!match) return null
+  const query = match[2] ?? ''
+  const colonIdx = beforeCursor.lastIndexOf(':')
+  return { start: colonIdx, end: cursorPosition, query }
+}
 
 const getMentionContext = (text: string, cursorPosition: number): MentionContext | null => {
   const beforeCursor = text.slice(0, cursorPosition)
@@ -121,6 +140,8 @@ export default function MessageInput({
   const [channelMembers, setChannelMembers] = useState<User[]>([])
   const [mentionContext, setMentionContext] = useState<MentionContext | null>(null)
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0)
+  const [emojiContext, setEmojiContext] = useState<EmojiContext | null>(null)
+  const [selectedEmojiIndex, setSelectedEmojiIndex] = useState(0)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const messageInputRef = useRef<HTMLInputElement | null>(null)
   const typingStopTimeoutRef = useRef<number | null>(null)
@@ -272,6 +293,16 @@ export default function MessageInput({
     setSelectedMentionIndex(0)
   }, [mentionContext?.query, mentionContext?.start, mentionCandidates.length])
 
+  const emojiCandidates = useMemo<EmojiEntry[]>(
+    () => (emojiContext ? searchEmoji(emojiContext.query) : []),
+    [emojiContext],
+  )
+  const showEmojiAutocomplete = Boolean(!showMentions && emojiContext && emojiCandidates.length > 0)
+
+  useEffect(() => {
+    setSelectedEmojiIndex(0)
+  }, [emojiContext?.query])
+
   useEffect(() => {
     let isCancelled = false
 
@@ -315,15 +346,23 @@ export default function MessageInput({
     [channelId],
   )
 
+  const updateEmojiContext = useCallback((text: string, cursorPosition: number | null) => {
+    if (cursorPosition === null) { setEmojiContext(null); return }
+    setEmojiContext(getEmojiContext(text, cursorPosition))
+  }, [])
+
   const handleMessageChange = (value: string, cursorPosition: number | null) => {
     setMessage(value)
     updateMentionContext(value, cursorPosition)
+    updateEmojiContext(value, cursorPosition)
     syncTypingState(value)
   }
 
   const handleCursorUpdate = () => {
     if (!messageInputRef.current) return
-    updateMentionContext(message, messageInputRef.current.selectionStart)
+    const pos = messageInputRef.current.selectionStart
+    updateMentionContext(message, pos)
+    updateEmojiContext(message, pos)
   }
 
   const handleSendMessage = async () => {
@@ -353,6 +392,7 @@ export default function MessageInput({
     if (sent) {
       setMessage('')
       setMentionContext(null)
+      setEmojiContext(null)
       onCancelReply?.()
     }
   }
@@ -373,6 +413,25 @@ export default function MessageInput({
       if (!messageInputRef.current) return
       messageInputRef.current.focus()
       messageInputRef.current.setSelectionRange(nextCursorPosition, nextCursorPosition)
+    })
+  }
+
+  const selectEmoji = (entry: EmojiEntry) => {
+    if (!emojiContext) return
+
+    const before = message.slice(0, emojiContext.start)
+    const after = message.slice(emojiContext.end)
+    const insertion = `${entry.char} `
+    const newMessage = `${before}${insertion}${after}`
+    const nextCursor = before.length + insertion.length
+
+    setMessage(newMessage)
+    setEmojiContext(null)
+
+    requestAnimationFrame(() => {
+      if (!messageInputRef.current) return
+      messageInputRef.current.focus()
+      messageInputRef.current.setSelectionRange(nextCursor, nextCursor)
     })
   }
 
@@ -402,6 +461,32 @@ export default function MessageInput({
       if (e.key === 'Escape') {
         e.preventDefault()
         setMentionContext(null)
+        return
+      }
+    }
+
+    if (showEmojiAutocomplete) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedEmojiIndex((prev) => (prev + 1) % emojiCandidates.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedEmojiIndex((prev) => (prev - 1 + emojiCandidates.length) % emojiCandidates.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        const selected = emojiCandidates[selectedEmojiIndex]
+        if (selected) {
+          e.preventDefault()
+          selectEmoji(selected)
+          return
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setEmojiContext(null)
         return
       }
     }
@@ -524,7 +609,7 @@ export default function MessageInput({
             onBlur={stopTyping}
             onKeyUp={handleCursorUpdate}
             onKeyDown={handleKeyPress}
-            placeholder="Type a message... (use @username to mention)"
+            placeholder="Type a message... (@username to mention, :emoji: for emoji)"
             className="w-full px-3 sm:px-4 py-2 bg-gray-100 dark:bg-gray-700 border-none rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm sm:text-base text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
           />
 
@@ -560,6 +645,27 @@ export default function MessageInput({
                   No matching users in this channel
                 </div>
               )}
+            </div>
+          )}
+
+          {showEmojiAutocomplete && (
+            <div className="absolute left-0 bottom-12 w-72 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg py-1 z-20">
+              {emojiCandidates.map((entry, index) => (
+                <button
+                  key={entry.char}
+                  type="button"
+                  onClick={() => selectEmoji(entry)}
+                  onMouseEnter={() => setSelectedEmojiIndex(index)}
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-3 transition-colors ${
+                    index === selectedEmojiIndex
+                      ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
+                      : 'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800'
+                  }`}
+                >
+                  <span className="text-xl leading-none w-7 flex-shrink-0 text-center">{entry.char}</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">:{entry.names[0]}:</span>
+                </button>
+              ))}
             </div>
           )}
 
