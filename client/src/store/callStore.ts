@@ -48,6 +48,15 @@ const pendingIceCandidates = new Map<string, RTCIceCandidateInit[]>()
 let screenTrack: MediaStreamTrack | null = null
 let cameraTrack: MediaStreamTrack | null = null
 let boundSocket: ReturnType<typeof useChatStore.getState>['socket'] = null
+const callDebugEnabled = import.meta.env.DEV || import.meta.env.VITE_CALL_DEBUG === 'true'
+
+const logCallDebug = (...args: unknown[]) => {
+    if (!callDebugEnabled) {
+        return
+    }
+
+    console.debug('[call]', ...args)
+}
 
 const getSocket = () => useChatStore.getState().socket
 
@@ -88,6 +97,7 @@ const createPeerConnection = (
     onTrack: (stream: MediaStream) => void,
 ) => {
     const pc = new RTCPeerConnection({ iceServers: WEBRTC_ICE_SERVERS })
+    logCallDebug('create-peer', { toUserId, callId, iceServers: WEBRTC_ICE_SERVERS })
 
     if (localStream) {
         localStream.getTracks().forEach((track) => pc.addTrack(track, localStream))
@@ -95,6 +105,12 @@ const createPeerConnection = (
 
     pc.onicecandidate = (event) => {
         if (event.candidate) {
+            logCallDebug('local-ice-candidate', {
+                toUserId,
+                callId,
+                candidateType: event.candidate.type,
+                protocol: event.candidate.protocol,
+            })
             getSocket()?.emit('call:signal', {
                 callId,
                 toUserId,
@@ -104,7 +120,36 @@ const createPeerConnection = (
     }
 
     pc.ontrack = (event) => {
+        logCallDebug('remote-track', {
+            fromUserId: toUserId,
+            callId,
+            tracks: event.streams[0]?.getTracks().map((track) => track.kind),
+        })
         onTrack(event.streams[0])
+    }
+
+    pc.onconnectionstatechange = () => {
+        logCallDebug('connection-state', {
+            toUserId,
+            callId,
+            connectionState: pc.connectionState,
+        })
+    }
+
+    pc.oniceconnectionstatechange = () => {
+        logCallDebug('ice-connection-state', {
+            toUserId,
+            callId,
+            iceConnectionState: pc.iceConnectionState,
+        })
+    }
+
+    pc.onsignalingstatechange = () => {
+        logCallDebug('signaling-state', {
+            toUserId,
+            callId,
+            signalingState: pc.signalingState,
+        })
     }
 
     peers.set(toUserId, { pc, username })

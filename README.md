@@ -38,8 +38,10 @@ A privacy-first instant messaging application similar to Discord and Slack. Buil
 
 ## Prerequisites
 
-- Node.js (v18 or higher)
+- Node.js (`20.19+` or `22.12+` recommended)
 - npm
+
+Note: the server uses `better-sqlite3` (native module). If your Node version changes, reinstall server dependencies so the native binding matches the active Node runtime.
 
 ## Installation
 
@@ -89,6 +91,14 @@ Or separately:
 ```bash
 cd server && npm run dev   # http://localhost:3001
 cd client && npm run dev   # http://localhost:5173
+```
+
+If server startup fails with a `better-sqlite3` ABI/binding error, reinstall under the same Node runtime used to run the server:
+
+```bash
+cd server
+rm -rf node_modules/better-sqlite3
+npm install better-sqlite3@9.6.0
 ```
 
 ## Usage
