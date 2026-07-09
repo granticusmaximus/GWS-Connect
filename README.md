@@ -93,6 +93,69 @@ cd server && npm run dev   # http://localhost:3001
 cd client && npm run dev   # http://localhost:5173
 ```
 
+## Local Database and Promotion
+
+- Local development uses SQLite via `better-sqlite3`.
+- Default local DB file: `server/data/gws-connect.db`.
+- In production, set `DB_PATH` explicitly. The server now refuses to start in production if `DB_PATH` is missing to prevent accidental drift to an unexpected file.
+
+Useful commands:
+
+```bash
+npm run db:inspect:local   # shows key counts/tables for the local DB
+npm run db:backup:local    # creates timestamped backup in server/data/backups
+npm run db:promote:prod    # guarded remote promotion (requires env vars)
+npm run db:sync:dev-to-prod # same flow, named as dev -> prod sync
+npm run db:remote-only-deploy # run on the production host after a staged DB is already present
+npm run db:upload-and-remote-deploy # upload local DB, then trigger the remote-only deploy automatically
+```
+
+Example promotion command:
+
+```bash
+PROD_HOST=connect.gwsapp.net \
+PROD_USER=deploy \
+PROD_DB_PATH=/var/lib/gws-connect/gws-connect.db \
+PROD_RESTART_CMD='systemctl restart gws-connect' \
+CONFIRM=YES \
+npm run db:promote:prod
+```
+
+Recommended promotion order:
+
+1. Stop production app.
+2. Backup production DB.
+3. Upload/copy local `gws-connect.db` to production `DB_PATH`.
+4. Start production app.
+5. Verify counts with sqlite3 and app login/message flow.
+
+If your goal is "whatever is in dev should be copied to prod", use `db:sync:dev-to-prod` as the normal push step after changes are validated locally.
+
+If you already have the new database file on the production host and just want to swap it into place before restart, use `db:remote-only-deploy` on that host.
+
+If you want the local dev DB pushed over and then deployed automatically, use `db:upload-and-remote-deploy`.
+
+Example remote-only deploy command:
+
+```bash
+PROD_DB_PATH=/var/lib/gws-connect/gws-connect.db \
+STAGED_DB_PATH=/tmp/gws-connect.db \
+PROD_RESTART_CMD='systemctl restart gws-connect' \
+CONFIRM=YES \
+bash scripts/db/remote-only-deploy.sh
+```
+
+Example upload + auto-deploy command:
+
+```bash
+PROD_HOST=connect.gwsapp.net \
+PROD_USER=deploy \
+PROD_DB_PATH=/var/lib/gws-connect/gws-connect.db \
+PROD_RESTART_CMD='systemctl restart gws-connect' \
+CONFIRM=YES \
+npm run db:upload-and-remote-deploy
+```
+
 If server startup fails with a `better-sqlite3` ABI/binding error, reinstall under the same Node runtime used to run the server:
 
 ```bash

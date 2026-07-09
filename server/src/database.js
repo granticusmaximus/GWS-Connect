@@ -7,9 +7,16 @@ const DEFAULT_AVATAR = '/image.png';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const defaultDbPath = path.join(__dirname, '..', 'data', 'gws-connect.db');
+const configuredDbPath = process.env.DB_PATH;
 
-const dbPath =
-	process.env.DB_PATH || path.join(__dirname, '..', 'data', 'gws-connect.db');
+if (process.env.NODE_ENV === 'production' && !configuredDbPath) {
+	throw new Error(
+		'DB_PATH must be set in production. Refusing to start with implicit SQLite path to avoid accidental database drift.',
+	);
+}
+
+const dbPath = configuredDbPath || defaultDbPath;
 
 // Ensure the data directory exists
 const dbDir = path.dirname(dbPath);
@@ -827,5 +834,9 @@ db.exec(`
 `);
 
 console.log('SQLite database initialized at:', dbPath);
+
+if (!configuredDbPath) {
+	console.warn('Using default DB_PATH (local development):', defaultDbPath);
+}
 
 export default db;
