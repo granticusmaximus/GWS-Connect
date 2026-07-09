@@ -46,6 +46,55 @@ router.get('/profile/:userId', authenticateToken, async (req, res) => {
 	}
 });
 
+router.put('/me/status', authenticateToken, async (req, res) => {
+	try {
+		const rawEmoji =
+			typeof req.body?.statusEmoji === 'string' ? req.body.statusEmoji.trim() : '';
+		const rawText =
+			typeof req.body?.statusText === 'string' ? req.body.statusText.trim() : '';
+		const statusEmoji = rawEmoji.slice(0, 16) || null;
+		const statusText = rawText.slice(0, 80) || null;
+		let statusClearsAt = null;
+
+		if ((statusEmoji || statusText) && req.body?.statusClearsAt) {
+			const parsedClearsAt = new Date(req.body.statusClearsAt);
+			if (Number.isNaN(parsedClearsAt.getTime())) {
+				return res.status(400).json({ message: 'Invalid status clear time' });
+			}
+			if (parsedClearsAt.getTime() <= Date.now()) {
+				return res
+					.status(400)
+					.json({ message: 'Status clear time must be in the future' });
+			}
+			statusClearsAt = parsedClearsAt.toISOString();
+		}
+
+		const user = updateUser(req.user.id, {
+			statusEmoji,
+			statusText,
+			statusClearsAt: statusEmoji || statusText ? statusClearsAt : null,
+		});
+		if (!user) {
+			return res.status(404).json({ message: 'User not found' });
+		}
+
+		const io = req.app.get('io');
+		if (io) {
+			io.emit('user-status-updated', {
+				userId: String(req.user.id),
+				statusEmoji: user.statusEmoji || null,
+				statusText: user.statusText || null,
+				statusClearsAt: user.statusClearsAt || null,
+			});
+		}
+
+		res.json(sanitizeUser(user));
+	} catch (error) {
+		console.error('Status update error:', error);
+		res.status(500).json({ message: 'Server error: ' + error.message });
+	}
+});
+
 // Update user profile
 router.put('/profile', authenticateToken, async (req, res) => {
 	try {

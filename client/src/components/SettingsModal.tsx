@@ -7,6 +7,7 @@ import { formatDateTime } from '../utils/dateFormat'
 import { useThemeStore } from '../store/themeStore'
 import { useAuthStore } from '../store/authStore'
 import { API_URL } from '../config/runtime'
+import { getActiveCustomStatus, toDateTimeLocalValue } from '../utils/userStatus'
 import { subscribeToPush, unsubscribeFromPush, isIOS, isPWAInstalled, isPushNotificationSupported } from '../utils/pushNotifications'
 
 interface SettingsModalProps {
@@ -21,8 +22,9 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
   const setTimeFormat = usePreferencesStore((state) => state.setTimeFormat)
   const setDateFormat = usePreferencesStore((state) => state.setDateFormat)
   const { autoCloseSidebarOnSelect, setAutoCloseSidebar } = useThemeStore()
-  const { user, deleteAccount, updateProfile } = useAuthStore()
+  const { user, deleteAccount, updateProfile, updateStatus } = useAuthStore()
   const navigate = useNavigate()
+  const initialStatus = getActiveCustomStatus(user)
 
   const [pushEnabled, setPushEnabled] = useState(false)
   const [pushLoading, setPushLoading] = useState(false)
@@ -30,6 +32,11 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
   const [localDateFormat, setLocalDateFormat] = useState(dateFormat)
   const [localAutoCloseSidebar, setLocalAutoCloseSidebar] = useState(autoCloseSidebarOnSelect)
   const [localAppearOffline, setLocalAppearOffline] = useState(Boolean(user?.appearOffline))
+  const [localStatusEmoji, setLocalStatusEmoji] = useState(initialStatus?.statusEmoji || '')
+  const [localStatusText, setLocalStatusText] = useState(initialStatus?.statusText || '')
+  const [localStatusClearsAt, setLocalStatusClearsAt] = useState(
+    toDateTimeLocalValue(initialStatus?.statusClearsAt || null),
+  )
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
 
@@ -84,15 +91,19 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
 
   useEffect(() => {
     if (isOpen) {
+      const activeStatus = getActiveCustomStatus(user)
       setLocalTimeFormat(timeFormat)
       setLocalDateFormat(dateFormat)
       setLocalAutoCloseSidebar(autoCloseSidebarOnSelect)
       setLocalAppearOffline(Boolean(user?.appearOffline))
+      setLocalStatusEmoji(activeStatus?.statusEmoji || '')
+      setLocalStatusText(activeStatus?.statusText || '')
+      setLocalStatusClearsAt(toDateTimeLocalValue(activeStatus?.statusClearsAt || null))
       setSettingsError(null)
       void loadSessions()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, timeFormat, dateFormat, autoCloseSidebarOnSelect, user?.appearOffline])
+  }, [isOpen, timeFormat, dateFormat, autoCloseSidebarOnSelect, user])
 
   const revokeSession = async (sessionId: number) => {
     setRevokingSessionId(sessionId)
@@ -244,6 +255,31 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
     setSettingsError(null)
 
     try {
+      const statusEmoji = localStatusEmoji.trim() || null
+      const statusText = localStatusText.trim() || null
+      let statusClearsAt: string | null = null
+
+      if (localStatusClearsAt && (statusEmoji || statusText)) {
+        const parsedClearsAt = new Date(localStatusClearsAt)
+        if (Number.isNaN(parsedClearsAt.getTime())) {
+          setSettingsError('Please choose a valid status clear time.')
+          setSettingsSaving(false)
+          return
+        }
+        if (parsedClearsAt.getTime() <= Date.now()) {
+          setSettingsError('Status clear time must be in the future.')
+          setSettingsSaving(false)
+          return
+        }
+        statusClearsAt = parsedClearsAt.toISOString()
+      }
+
+      await updateStatus({
+        statusEmoji,
+        statusText,
+        statusClearsAt: statusEmoji || statusText ? statusClearsAt : null,
+      })
+
       if (Boolean(user?.appearOffline) !== localAppearOffline) {
         await updateProfile({ appearOffline: localAppearOffline ? 1 : 0 })
       }
@@ -386,6 +422,65 @@ export default function SettingsModal({ isOpen, onClose, pushPermission }: Setti
                 />
               </span>
             </label>
+          </div>
+
+          <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-800/60 p-4 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-gray-900 dark:text-white">Custom status</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Add a short status message that appears in direct messages and profile hover cards.
+                </p>
+              </div>
+              {(localStatusEmoji || localStatusText || localStatusClearsAt) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLocalStatusEmoji('')
+                    setLocalStatusText('')
+                    setLocalStatusClearsAt('')
+                  }}
+                  className="rounded-lg border border-gray-300 dark:border-gray-700 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <input
+                type="text"
+                value={localStatusEmoji}
+                onChange={(e) => setLocalStatusEmoji(e.target.value)}
+                placeholder="🙂"
+                maxLength={16}
+                className="w-20 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-center text-lg text-gray-900 dark:text-white"
+                aria-label="Status emoji"
+              />
+              <input
+                type="text"
+                value={localStatusText}
+                onChange={(e) => setLocalStatusText(e.target.value)}
+                placeholder="What are you up to?"
+                maxLength={80}
+                className="flex-1 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                aria-label="Status text"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">
+                Clear status at
+              </label>
+              <input
+                type="datetime-local"
+                value={localStatusClearsAt}
+                onChange={(e) => setLocalStatusClearsAt(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-white"
+                aria-label="Status clear time"
+              />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Leave blank to keep the status until you clear or replace it.
+              </p>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-start justify-between gap-4">

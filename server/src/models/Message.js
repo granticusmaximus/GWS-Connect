@@ -1,5 +1,5 @@
 import db from '../database.js';
-import { findUserByUsername } from './User.js';
+import { findUserById, findUserByUsername } from './User.js';
 
 const mentionRegex = /@([A-Za-z0-9._-]+)/g;
 const messageThreadSelect = `
@@ -213,21 +213,16 @@ export const getDirectConversationSummaries = (userId) => {
 
 	return conversationRows.map((row) => {
 		const peerUserId = String(row.peerUserId);
-		const user = db
-			.prepare(
-				`
-          SELECT id, username, avatar
-          FROM users
-          WHERE id = ?
-        `,
-			)
-			.get(row.peerUserId);
+		const user = findUserById(row.peerUserId);
 
 		return {
 			id: peerUserId,
 			userId: peerUserId,
 			username: user?.username || 'Unknown',
 			avatar: user?.avatar || null,
+			statusEmoji: user?.statusEmoji || null,
+			statusText: user?.statusText || null,
+			statusClearsAt: user?.statusClearsAt || null,
 			lastMessageAt: row.lastMessageAt || null,
 			unreadCount: unreadByPeerUserId.get(peerUserId) || 0,
 		};

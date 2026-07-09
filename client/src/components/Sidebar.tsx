@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useChatStore } from '../store/chatStore'
 import { CheckCircleIcon, HashtagIcon, PlusIcon, UserCircleIcon, UserGroupIcon, XMarkIcon } from '@heroicons/react/24/outline'
+import { formatStatusForDisplay } from '../utils/userStatus'
 import UserSearchModal from './UserSearchModal'
 import ChannelModal from './ChannelModal'
 import GroupChatModal from './GroupChatModal'
@@ -217,49 +218,58 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
               No direct messages yet
             </div>
           ) : (
-            directMessages.map((conversation) => (
-              <button
-                key={conversation.id}
-                onClick={() => handleDirectMessageSelect(conversation.userId)}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
-                  activeDM === conversation.userId
-                    ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
-                    : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
-                }`}
-              >
-                <div className="relative h-9 w-9 flex-shrink-0">
-                  <div className="h-9 w-9 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
-                    {conversation.avatar ? (
-                      <img
-                        src={conversation.avatar}
-                        alt={conversation.username}
-                        className="h-full w-full object-cover"
+            directMessages.map((conversation) => {
+              const statusLabel = formatStatusForDisplay(conversation)
+
+              return (
+                <button
+                  key={conversation.id}
+                  onClick={() => handleDirectMessageSelect(conversation.userId)}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+                    activeDM === conversation.userId
+                      ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
+                      : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
+                  }`}
+                >
+                  <div className="relative h-9 w-9 flex-shrink-0">
+                    <div className="h-9 w-9 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
+                      {conversation.avatar ? (
+                        <img
+                          src={conversation.avatar}
+                          alt={conversation.username}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <UserCircleIcon className="h-7 w-7 text-gray-500 dark:text-gray-400" />
+                      )}
+                    </div>
+                    {onlineUsers.includes(conversation.userId) && (
+                      <span
+                        className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full ring-2 ring-white dark:ring-gray-800 ${
+                          presenceByUserId[conversation.userId] === 'idle'
+                            ? 'bg-yellow-400'
+                            : 'bg-green-500'
+                        }`}
+                        aria-label={presenceByUserId[conversation.userId] === 'idle' ? 'Idle' : 'Online'}
                       />
-                    ) : (
-                      <UserCircleIcon className="h-7 w-7 text-gray-500 dark:text-gray-400" />
                     )}
                   </div>
-                  {onlineUsers.includes(conversation.userId) && (
-                    <span
-                      className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full ring-2 ring-white dark:ring-gray-800 ${
-                        presenceByUserId[conversation.userId] === 'idle'
-                          ? 'bg-yellow-400'
-                          : 'bg-green-500'
-                      }`}
-                      aria-label={presenceByUserId[conversation.userId] === 'idle' ? 'Idle' : 'Online'}
-                    />
+                  <div className="min-w-0 flex-1 text-left">
+                    <div className="truncate text-sm font-medium">{conversation.username}</div>
+                    {statusLabel && (
+                      <div className="truncate text-xs text-gray-500 dark:text-gray-400">
+                        {statusLabel}
+                      </div>
+                    )}
+                  </div>
+                  {conversation.unreadCount > 0 && (
+                    <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-primary-600 px-1.5 py-0.5 text-[11px] font-semibold leading-none text-white">
+                      {formatUnreadCount(conversation.unreadCount)}
+                    </span>
                   )}
-                </div>
-                <span className="flex-1 truncate text-left text-sm font-medium">
-                  {conversation.username}
-                </span>
-                {conversation.unreadCount > 0 && (
-                  <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-primary-600 px-1.5 py-0.5 text-[11px] font-semibold leading-none text-white">
-                    {formatUnreadCount(conversation.unreadCount)}
-                  </span>
-                )}
-              </button>
-            ))
+                </button>
+              )
+            })
           )}
         </div>
       </div>

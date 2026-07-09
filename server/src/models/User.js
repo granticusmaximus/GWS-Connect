@@ -9,12 +9,35 @@ const normalizeAvatar = (avatar) =>
 		? avatar
 		: DEFAULT_AVATAR;
 
-const normalizeUserRecord = (user) => {
-	if (!user) return null;
+const clearExpiredStatusIfNeeded = (user) => {
+	if (!user?.statusClearsAt) {
+		return user;
+	}
+
+	const clearsAt = new Date(user.statusClearsAt).getTime();
+	if (!Number.isFinite(clearsAt) || clearsAt > Date.now()) {
+		return user;
+	}
+
+	db.prepare(
+		'UPDATE users SET statusEmoji = NULL, statusText = NULL, statusClearsAt = NULL WHERE id = ?',
+	).run(user.id);
 
 	return {
 		...user,
-		avatar: normalizeAvatar(user.avatar),
+		statusEmoji: null,
+		statusText: null,
+		statusClearsAt: null,
+	};
+};
+
+const normalizeUserRecord = (user) => {
+	if (!user) return null;
+	const withFreshStatus = clearExpiredStatusIfNeeded(user);
+
+	return {
+		...withFreshStatus,
+		avatar: normalizeAvatar(withFreshStatus.avatar),
 	};
 };
 
@@ -118,6 +141,18 @@ export const updateUser = (id, updates) => {
 		fields.push('appearOffline = ?');
 		values.push(updates.appearOffline ? 1 : 0);
 	}
+	if (updates.statusEmoji !== undefined) {
+		fields.push('statusEmoji = ?');
+		values.push(updates.statusEmoji);
+	}
+	if (updates.statusText !== undefined) {
+		fields.push('statusText = ?');
+		values.push(updates.statusText);
+	}
+	if (updates.statusClearsAt !== undefined) {
+		fields.push('statusClearsAt = ?');
+		values.push(updates.statusClearsAt);
+	}
 	if (updates.e2eePublicKey !== undefined) {
 		fields.push('e2eePublicKey = ?');
 		values.push(updates.e2eePublicKey);
@@ -205,6 +240,9 @@ export const anonymizeUser = (id) => {
       role = 'user',
       mustChangePassword = 0,
       appearOffline = 0,
+      statusEmoji = NULL,
+      statusText = NULL,
+      statusClearsAt = NULL,
       twoFactorEnabled = 0,
       twoFactorSecret = NULL,
       pendingTwoFactorSecret = NULL,

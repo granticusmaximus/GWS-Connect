@@ -24,6 +24,9 @@ interface User {
     email: string
     theme?: 'light' | 'dark'
     appearOffline?: number | boolean
+    statusEmoji?: string | null
+    statusText?: string | null
+    statusClearsAt?: string | null
     e2eePublicKey?: JsonWebKey
     e2eeEncryptedPrivateKey?: string
     e2eeSalt?: string
@@ -65,6 +68,7 @@ interface AuthState {
     deleteAccount: (currentPassword: string, code?: string) => Promise<void>
     initializeAuth: () => void
     updateProfile: (updates: Partial<User>) => Promise<void>
+    updateStatus: (status: Pick<User, 'statusEmoji' | 'statusText' | 'statusClearsAt'>) => Promise<void>
 }
 
 // Set up axios interceptor to always include token from localStorage
@@ -303,6 +307,22 @@ export const useAuthStore = create<AuthState>((set, get) => {
         } catch (error: unknown) {
             const axiosError = error as AxiosError<{ message?: string }>
             const message = axiosError.response?.data?.message || 'Profile update failed'
+            set({ error: message })
+            throw error
+        }
+    },
+    updateStatus: async (status) => {
+        try {
+            const response = await axios.put(`${API_URL}/users/me/status`, status)
+            const updatedUser = normalizeUserAvatar(response.data)
+            set((state) => {
+                const mergedUser = { ...(state.user || {}), ...updatedUser }
+                localStorage.setItem('user', JSON.stringify(mergedUser))
+                return { user: mergedUser }
+            })
+        } catch (error: unknown) {
+            const axiosError = error as AxiosError<{ message?: string }>
+            const message = axiosError.response?.data?.message || 'Status update failed'
             set({ error: message })
             throw error
         }

@@ -10,6 +10,7 @@ import { formatDate, formatTime } from '../utils/dateFormat'
 import { parseMentions, type MessageMention } from '../utils/mentions'
 import { renderMarkdown, renderMarkdownInline } from '../utils/renderMarkdown'
 import { getReplyPreviewText, getThreadKey } from '../utils/replies'
+import { getActiveCustomStatus } from '../utils/userStatus'
 import { useAuthStore } from '../store/authStore'
 import MessageInput from './MessageInput'
 import ChannelModal from './ChannelModal'
@@ -43,6 +44,9 @@ interface HoverProfileCard {
   userId: string
   username: string
   avatar?: string
+  statusEmoji?: string | null
+  statusText?: string | null
+  statusClearsAt?: string | null
   top: number
   left: number
 }
@@ -64,7 +68,7 @@ interface ChannelMember {
 type ReplyPreviewData = ChatMessage | ReplyContext
 
 const PROFILE_CARD_WIDTH = 256
-const PROFILE_CARD_ESTIMATED_HEIGHT = 216
+const PROFILE_CARD_ESTIMATED_HEIGHT = 248
 const PROFILE_CARD_OPEN_DELAY_MS = 450
 const PROFILE_CARD_CLOSE_DELAY_MS = 140
 
@@ -880,6 +884,41 @@ export default function ChatWindow() {
   }, [hoverProfileCard, navigate])
 
   useEffect(() => {
+    if (!hoverProfileCard?.userId) {
+      return
+    }
+
+    let ignore = false
+    const userId = hoverProfileCard.userId
+
+    void axios
+      .get(`${API_URL}/users/profile/${userId}`)
+      .then((response) => {
+        if (ignore) {
+          return
+        }
+
+        setHoverProfileCard((current) =>
+          current && current.userId === userId
+            ? {
+                ...current,
+                statusEmoji: response.data?.statusEmoji || null,
+                statusText: response.data?.statusText || null,
+                statusClearsAt: response.data?.statusClearsAt || null,
+              }
+            : current,
+        )
+      })
+      .catch((error) => {
+        console.error('Error loading hover profile status:', error)
+      })
+
+    return () => {
+      ignore = true
+    }
+  }, [hoverProfileCard?.userId])
+
+  useEffect(() => {
     setHoverProfileCard(null)
     clearProfileCardOpenTimer()
     clearProfileCardCloseTimer()
@@ -890,6 +929,11 @@ export default function ChatWindow() {
     clearProfileCardCloseTimer()
     clearHighlightTimer()
   }, [clearProfileCardOpenTimer, clearProfileCardCloseTimer, clearHighlightTimer])
+
+  const hoverProfileStatus = useMemo(
+    () => getActiveCustomStatus(hoverProfileCard),
+    [hoverProfileCard],
+  )
 
   const handleAddChannelMember = useCallback(async (member: ChannelMember) => {
     if (!activeChannel) return
@@ -1890,6 +1934,11 @@ export default function ChatWindow() {
             <p className="text-sm font-semibold text-gray-900 dark:text-white truncate max-w-full">
               {hoverProfileCard.username}
             </p>
+            {hoverProfileStatus && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 text-center max-w-full break-words">
+                {[hoverProfileStatus.statusEmoji, hoverProfileStatus.statusText].filter(Boolean).join(' ')}
+              </p>
+            )}
           </div>
           <div className="my-3 h-px bg-gray-200 dark:bg-gray-700" />
           <button

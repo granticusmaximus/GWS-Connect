@@ -335,6 +335,9 @@ export interface DirectMessage {
     userId: string
     username: string
     avatar?: string | null
+    statusEmoji?: string | null
+    statusText?: string | null
+    statusClearsAt?: string | null
     lastMessageAt: string | null
     unreadCount: number
 }
@@ -882,6 +885,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         socket.on('presence-update', (presence: { [userId: string]: 'online' | 'idle' }) => {
             set({ presenceByUserId: presence })
+        })
+
+        socket.on('user-status-updated', (payload: {
+            userId: string
+            statusEmoji?: string | null
+            statusText?: string | null
+            statusClearsAt?: string | null
+        }) => {
+            set((state) => ({
+                directMessages: state.directMessages.map((conversation) =>
+                    conversation.userId === payload.userId
+                        ? {
+                            ...conversation,
+                            statusEmoji: payload.statusEmoji || null,
+                            statusText: payload.statusText || null,
+                            statusClearsAt: payload.statusClearsAt || null,
+                        }
+                        : conversation,
+                ),
+            }))
         })
 
         socket.on('dm-read', (payload: { readerId: string; peerId: string; lastVisitedAt: string }) => {
@@ -2334,6 +2357,9 @@ const normalizeDirectConversation = (
         userId: String(conversation.userId ?? id),
         username: conversation.username || 'Direct Message',
         avatar: conversation.avatar || null,
+        statusEmoji: conversation.statusEmoji || null,
+        statusText: conversation.statusText || null,
+        statusClearsAt: conversation.statusClearsAt || null,
         lastMessageAt: conversation.lastMessageAt || null,
         unreadCount: Number(conversation.unreadCount || 0),
     }

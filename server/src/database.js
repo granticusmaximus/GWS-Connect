@@ -37,6 +37,9 @@ db.exec(`
     e2eeIv TEXT,
     theme TEXT DEFAULT 'light' CHECK(theme IN ('light', 'dark')),
     appearOffline INTEGER DEFAULT 0 CHECK(appearOffline IN (0, 1)),
+    statusEmoji TEXT,
+    statusText TEXT,
+    statusClearsAt DATETIME,
     interests TEXT DEFAULT '[]',
     socialLinks TEXT DEFAULT '{}',
     contactInfo TEXT DEFAULT '{}',
@@ -372,6 +375,18 @@ if (!userColumns.includes('appearOffline')) {
 	db.prepare(
 		'ALTER TABLE users ADD COLUMN appearOffline INTEGER DEFAULT 0',
 	).run();
+}
+
+if (!userColumns.includes('statusEmoji')) {
+	db.prepare('ALTER TABLE users ADD COLUMN statusEmoji TEXT').run();
+}
+
+if (!userColumns.includes('statusText')) {
+	db.prepare('ALTER TABLE users ADD COLUMN statusText TEXT').run();
+}
+
+if (!userColumns.includes('statusClearsAt')) {
+	db.prepare('ALTER TABLE users ADD COLUMN statusClearsAt DATETIME').run();
 }
 
 db.exec(`
