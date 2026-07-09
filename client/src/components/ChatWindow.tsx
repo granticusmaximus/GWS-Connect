@@ -236,6 +236,7 @@ export default function ChatWindow() {
     channels,
     directMessages,
     groupChats,
+    voiceChannels,
     messages,
     activeDM,
     activeGroupChat,
@@ -422,6 +423,56 @@ export default function ChatWindow() {
     }
     return null
   }, [activeChannel, activeDM, activeGroupChat])
+  const activeVoiceChannel = useMemo(() => {
+    if (!activeCallId?.startsWith('voice:')) {
+      return null
+    }
+
+    const voiceChannelId = activeCallId.slice('voice:'.length)
+    return voiceChannels.find((voiceChannel) => voiceChannel.id === voiceChannelId) || null
+  }, [activeCallId, voiceChannels])
+
+  const chatHeaderTitle = useMemo(() => {
+    if (currentChatType === 'channel') {
+      return currentChannel?.name || 'Channel'
+    }
+
+    if (currentChatType === 'group') {
+      return currentGroupChat?.name || 'Group Chat'
+    }
+
+    if (currentChatType === 'dm') {
+      return currentDirectConversation?.username || 'Direct Message'
+    }
+
+    if (activeVoiceChannel) {
+      return activeVoiceChannel.name
+    }
+
+    return 'Direct Message'
+  }, [activeVoiceChannel, currentChannel, currentChatType, currentDirectConversation, currentGroupChat])
+
+  const chatHeaderSubtitle = useMemo(() => {
+    if (currentChatType === 'channel') {
+      return currentChannel?.description || 'Channel conversation'
+    }
+
+    if (currentChatType === 'group') {
+      return currentGroupChat ? `${currentGroupChat.members.length} members` : 'Group conversation'
+    }
+
+    if (currentChatType === 'dm') {
+      return currentDirectConversation
+        ? `Direct message with ${currentDirectConversation.username}`
+        : 'Private conversation'
+    }
+
+    if (activeVoiceChannel) {
+      return activeVoiceChannel.description || 'Voice channel'
+    }
+
+    return 'Private conversation'
+  }, [activeVoiceChannel, currentChannel, currentChatType, currentDirectConversation, currentGroupChat])
 
   const seenIndicatorText = useMemo(() => {
     if (currentChatType !== 'dm' && currentChatType !== 'group') {
@@ -2060,15 +2111,10 @@ export default function ChatWindow() {
             )}
             <div>
               <h3 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white truncate">
-                {currentChannel?.name || currentGroupChat?.name || currentDirectConversation?.username || 'Direct Message'}
+                {chatHeaderTitle}
               </h3>
               <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 truncate">
-                {currentChannel?.description
-                  || (currentGroupChat
-                    ? `${currentGroupChat.members.length} members`
-                    : currentDirectConversation
-                      ? `Direct message with ${currentDirectConversation.username}`
-                      : 'Private conversation')}
+                {chatHeaderSubtitle}
               </p>
             </div>
             {canEditChannel && activeChannel && (

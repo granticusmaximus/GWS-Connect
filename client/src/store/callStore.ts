@@ -44,6 +44,7 @@ interface CallState {
 }
 
 const peers = new Map<string, PeerEntry>()
+const pendingIceCandidates = new Map<string, RTCIceCandidateInit[]>()
 let screenTrack: MediaStreamTrack | null = null
 let cameraTrack: MediaStreamTrack | null = null
 let boundSocket: ReturnType<typeof useChatStore.getState>['socket'] = null
@@ -53,6 +54,30 @@ const getSocket = () => useChatStore.getState().socket
 const closeAllPeers = () => {
     peers.forEach(({ pc }) => pc.close())
     peers.clear()
+    pendingIceCandidates.clear()
+}
+
+const queueIceCandidate = (userId: string, candidate: RTCIceCandidateInit) => {
+    const queued = pendingIceCandidates.get(userId) || []
+    queued.push(candidate)
+    pendingIceCandidates.set(userId, queued)
+}
+
+const flushQueuedIceCandidates = async (userId: string, pc: RTCPeerConnection) => {
+    const queued = pendingIceCandidates.get(userId)
+    if (!queued || queued.length === 0) {
+        return
+    }
+
+    for (const candidate of queued) {
+        try {
+            await pc.addIceCandidate(candidate)
+        } catch (error) {
+            console.error('Failed to add queued ICE candidate:', error)
+        }
+    }
+
+    pendingIceCandidates.delete(userId)
 }
 
 const createPeerConnection = (
@@ -323,6 +348,7 @@ export const useCallStore = create<CallState>((set, get) => ({
                 }
 
                 await entry.pc.setRemoteDescription({ type: 'offer', sdp: payload.signal.sdp })
+                await flushQueuedIceCandidates(payload.fromUserId, entry.pc)
                 const answer = await entry.pc.createAnswer()
                 await entry.pc.setLocalDescription(answer)
                 getSocket()?.emit('call:signal', {
@@ -332,7 +358,18 @@ export const useCallStore = create<CallState>((set, get) => ({
                 })
             } else if (payload.signal.type === 'answer' && payload.signal.sdp && entry) {
                 await entry.pc.setRemoteDescription({ type: 'answer', sdp: payload.signal.sdp })
-            } else if (payload.signal.type === 'candidate' && payload.signal.candidate && entry) {
+                await flushQueuedIceCandidates(payload.fromUserId, entry.pc)
+            } else if (payload.signal.type === 'candidate' && payload.signal.candidate) {
+                if (!entry) {
+                    queueIceCandidate(payload.fromUserId, payload.signal.candidate)
+                    return
+                }
+
+                if (!entry.pc.remoteDescription) {
+                    queueIceCandidate(payload.fromUserId, payload.signal.candidate)
+                    return
+                }
+
                 try {
                     await entry.pc.addIceCandidate(payload.signal.candidate)
                 } catch (error) {
@@ -347,6 +384,7 @@ export const useCallStore = create<CallState>((set, get) => ({
 
             peers.get(payload.userId)?.pc.close()
             peers.delete(payload.userId)
+            pendingIceCandidates.delete(payload.userId)
 
             set((state) => {
                 const nextParticipants = { ...state.participants }
