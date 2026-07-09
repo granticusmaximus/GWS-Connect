@@ -60,6 +60,7 @@ interface AuthState {
     e2eePrivateKey: CryptoKey | null
     e2eeReady: boolean
     e2eeKeyRecoveryNeeded: boolean
+    unlockE2ee: (password: string) => Promise<boolean>
     twoFactorChallengeId: string | null
     login: (email: string, password: string) => Promise<void>
     completeTwoFactorLogin: (code: string, password: string) => Promise<void>
@@ -160,6 +161,28 @@ export const useAuthStore = create<AuthState>((set, get) => {
     e2eeReady: false,
     e2eeKeyRecoveryNeeded: false,
     twoFactorChallengeId: null,
+
+    unlockE2ee: async (password: string) => {
+        try {
+            const { user } = get()
+            if (!user?.e2eeEncryptedPrivateKey || !user?.e2eeSalt || !user?.e2eeIv) {
+                return false
+            }
+
+            const privateKeyJwk = await decryptPrivateKeyJwk(
+                user.e2eeEncryptedPrivateKey,
+                password,
+                user.e2eeSalt,
+                user.e2eeIv,
+            )
+            const privateKey = await importPrivateKey(privateKeyJwk)
+            sessionStorage.setItem('e2eePrivateKeyJwk', JSON.stringify(privateKeyJwk))
+            set({ e2eePrivateKey: privateKey, e2eeReady: true, e2eeKeyRecoveryNeeded: false, error: null })
+            return true
+        } catch {
+            return false
+        }
+    },
 
     initializeAuth: () => {
         const token = localStorage.getItem('token')

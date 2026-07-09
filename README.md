@@ -110,6 +110,12 @@ npm install better-sqlite3@9.6.0
 5. Drag and drop files to share them in conversations
 6. Visit your profile to customize your information
 
+## Encryption Session Notes
+
+- End-to-end encryption private keys are kept in `sessionStorage` after login for security.
+- If the browser session is reset (new browser process, tab restore behavior, some PWA launches), encrypted messaging is locked until you unlock it with your account password.
+- If an admin reset your password, old encrypted history may be unrecoverable and the app will guide you through key recovery/rotation.
+
 ## Project Structure
 
 ```

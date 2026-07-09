@@ -7,11 +7,12 @@ import Sidebar from '../components/Sidebar'
 import ChatWindow from '../components/ChatWindow'
 import Header from '../components/Header'
 import ForcePasswordChangeModal from '../components/ForcePasswordChangeModal'
+import E2eeUnlockModal from '../components/E2eeUnlockModal'
 
 const SIDEBAR_COLLAPSE_BREAKPOINT = 1024
 
 export default function Dashboard() {
-  const { user, changePassword, error, e2eeKeyRecoveryNeeded } = useAuthStore()
+  const { user, changePassword, error, e2eeKeyRecoveryNeeded, e2eeReady, unlockE2ee } = useAuthStore()
   const { restoreActiveChat } = useChatStore()
   const { autoCloseSidebarOnSelect } = useThemeStore()
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
@@ -20,6 +21,17 @@ export default function Dashboard() {
   })
   const [wasSidebarOpenedFromCollapsed, setWasSidebarOpenedFromCollapsed] = useState(false)
   const [savingPassword, setSavingPassword] = useState(false)
+  const [unlockingE2ee, setUnlockingE2ee] = useState(false)
+
+  const shouldShowE2eeUnlockModal = Boolean(
+    user &&
+    !user.mustChangePassword &&
+    !e2eeReady &&
+    !e2eeKeyRecoveryNeeded &&
+    user.e2eeEncryptedPrivateKey &&
+    user.e2eeSalt &&
+    user.e2eeIv,
+  )
 
   useEffect(() => {
     if (!user?.id) return
@@ -105,6 +117,18 @@ export default function Dashboard() {
             await changePassword(currentPassword, newPassword)
           } finally {
             setSavingPassword(false)
+          }
+        }}
+      />
+      <E2eeUnlockModal
+        isOpen={shouldShowE2eeUnlockModal}
+        loading={unlockingE2ee}
+        onUnlock={async (password) => {
+          setUnlockingE2ee(true)
+          try {
+            return await unlockE2ee(password)
+          } finally {
+            setUnlockingE2ee(false)
           }
         }}
       />
