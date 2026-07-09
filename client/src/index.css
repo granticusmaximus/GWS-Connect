@@ -42,6 +42,126 @@ code {
   @apply bg-gray-400 dark:bg-gray-500;
 }
 
+/* ── Chat Markdown ──────────────────────────────────────────────────────── */
+.chat-markdown {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.chat-markdown > *:first-child { margin-top: 0; }
+.chat-markdown > *:last-child  { margin-bottom: 0; }
+
+.chat-markdown p { margin-bottom: 0.3rem; }
+
+.chat-markdown strong,
+.chat-markdown b  { font-weight: 600; }
+
+.chat-markdown em,
+.chat-markdown i  { font-style: italic; }
+
+.chat-markdown del,
+.chat-markdown s  { text-decoration: line-through; }
+
+/* Inline code */
+.chat-markdown :not(pre) > code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+  font-size: 0.84em;
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.07);
+}
+.dark .chat-markdown :not(pre) > code {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Code block */
+.chat-markdown pre {
+  margin: 0.4rem 0;
+  padding: 0.7rem 1rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.05);
+  overflow-x: auto;
+}
+.dark .chat-markdown pre {
+  background: rgba(0, 0, 0, 0.35);
+}
+.chat-markdown pre code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82em;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+/* Blockquote */
+.chat-markdown blockquote {
+  margin: 0.3rem 0;
+  padding: 0.1rem 0 0.1rem 0.75rem;
+  border-left: 3px solid #cbd5e1;
+  color: #64748b;
+}
+.dark .chat-markdown blockquote {
+  border-left-color: #475569;
+  color: #94a3b8;
+}
+
+/* Lists */
+.chat-markdown ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin: 0.2rem 0;
+}
+.chat-markdown ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin: 0.2rem 0;
+}
+.chat-markdown li { margin: 0.1rem 0; }
+
+/* Links */
+.chat-markdown a {
+  text-decoration: underline;
+  color: #2563eb;
+}
+.dark .chat-markdown a { color: #60a5fa; }
+
+/* Headings */
+.chat-markdown h1, .chat-markdown h2, .chat-markdown h3 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin-bottom: 0.2rem;
+}
+.chat-markdown h1 { font-size: 1.2em; }
+.chat-markdown h2 { font-size: 1.1em; }
+.chat-markdown h3 { font-size: 1em; }
+
+/* Horizontal rule */
+.chat-markdown hr {
+  margin: 0.5rem 0;
+  border: none;
+  border-top: 1px solid #e2e8f0;
+}
+.dark .chat-markdown hr { border-top-color: #334155; }
+
+/* Own-message overrides (white text on primary-blue bubble) */
+.chat-markdown-own :not(pre) > code {
+  background: rgba(255, 255, 255, 0.2);
+}
+.chat-markdown-own pre {
+  background: rgba(0, 0, 0, 0.25);
+}
+.chat-markdown-own blockquote {
+  border-left-color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.75);
+}
+.chat-markdown-own a {
+  color: rgba(255, 255, 255, 0.9);
+}
+.chat-markdown-own hr {
+  border-top-color: rgba(255, 255, 255, 0.3);
+}
+
 /* Component Styles */
 @layer components {
   .btn-touch {

@@ -8,6 +8,7 @@ import { usePreferencesStore } from '../store/preferencesStore'
 import { API_URL } from '../config/runtime'
 import { formatDate, formatTime } from '../utils/dateFormat'
 import { parseMentions, type MessageMention } from '../utils/mentions'
+import { renderMarkdown, renderMarkdownInline } from '../utils/renderMarkdown'
 import { getReplyPreviewText, getThreadKey } from '../utils/replies'
 import { useAuthStore } from '../store/authStore'
 import MessageInput from './MessageInput'
@@ -111,9 +112,21 @@ function RenderMessage({
   onMentionHoverEnd?: () => void
 }) {
   const parts = parseMentions(content, mentions)
-  
+  const hasMentionParts = parts.some((p) => p.type === 'mention')
+
+  // No @mentions → full block-level markdown (code fences, lists, headings, etc.)
+  if (!hasMentionParts) {
+    return (
+      <div
+        className={`chat-markdown${isOwn ? ' chat-markdown-own' : ''}`}
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+      />
+    )
+  }
+
+  // Has @mentions → inline markdown per text segment + mention buttons
   return (
-    <span>
+    <span className={`chat-markdown${isOwn ? ' chat-markdown-own' : ''}`}>
       {parts.map((part, index) => {
         if (part.type === 'mention') {
           const mentionUsername = part.username || part.content.replace(/^@/, '')
@@ -148,7 +161,12 @@ function RenderMessage({
             </button>
           )
         }
-        return <span key={index}>{part.content}</span>
+        return (
+          <span
+            key={index}
+            dangerouslySetInnerHTML={{ __html: renderMarkdownInline(part.content) }}
+          />
+        )
       })}
     </span>
   )
@@ -1123,7 +1141,7 @@ export default function ChatWindow() {
                         ) : (
                           <Fragment>
                             {hasContent && (
-                              <p className={`${isOwn ? 'text-white' : 'text-gray-800 dark:text-gray-200'} whitespace-pre-wrap break-words [overflow-wrap:anywhere]`}>
+                              <div className={`${isOwn ? 'text-white' : 'text-gray-800 dark:text-gray-200'} break-words [overflow-wrap:anywhere]`}>
                                 <RenderMessage
                                   content={message.content}
                                   isOwn={isOwn}
@@ -1144,7 +1162,7 @@ export default function ChatWindow() {
                                   }
                                   onMentionHoverEnd={!isOwn ? handleAvatarHoverEnd : undefined}
                                 />
-                              </p>
+                              </div>
                             )}
                             {message.editedAt && (
                               <div className={`text-xs italic ${isOwn ? 'text-blue-100' : 'text-gray-400'}`}>
@@ -1507,9 +1525,10 @@ export default function ChatWindow() {
                   Unpin
                 </button>
               </div>
-              <p className="mt-1 break-words text-sm text-gray-700 dark:text-gray-200">
-                {message.content}
-              </p>
+              <div
+                className="chat-markdown mt-1 break-words text-sm text-gray-700 dark:text-gray-200"
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+              />
             </div>
           ))}
         </div>
