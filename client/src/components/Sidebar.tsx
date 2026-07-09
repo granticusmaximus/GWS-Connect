@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useChatStore } from '../store/chatStore'
-import { HashtagIcon, PlusIcon, UserCircleIcon, UserGroupIcon, XMarkIcon } from '@heroicons/react/24/outline'
+import { CheckCircleIcon, HashtagIcon, PlusIcon, UserCircleIcon, UserGroupIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import UserSearchModal from './UserSearchModal'
 import ChannelModal from './ChannelModal'
 import GroupChatModal from './GroupChatModal'
@@ -27,6 +27,7 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
     requestLatestMessageView,
     onlineUsers,
     presenceByUserId,
+    markAllConversationsRead,
   } = useChatStore()
   const [showUserSearch, setShowUserSearch] = useState(false)
   const [showChannelModal, setShowChannelModal] = useState(false)
@@ -56,6 +57,11 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
 
   const formatUnreadCount = (count: number) => (count > 99 ? '99+' : String(count))
 
+  const totalUnread =
+    channels.reduce((sum, ch) => sum + (ch.unreadCount ?? 0), 0) +
+    directMessages.reduce((sum, dm) => sum + (dm.unreadCount ?? 0), 0) +
+    groupChats.reduce((sum, g) => sum + (g.unreadCount ?? 0), 0)
+
   return (
     <div
       className={`fixed inset-y-0 left-0 z-40 w-full max-w-80 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col transform transition-[transform,width] duration-300 ${
@@ -79,9 +85,19 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
               <XMarkIcon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
             </button>
           )}
-          <button 
+          {totalUnread > 0 && (
+            <button
+              onClick={() => void markAllConversationsRead()}
+              className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+              title="Mark all as read"
+              aria-label="Mark all conversations as read"
+            >
+              <CheckCircleIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
+            </button>
+          )}
+          <button
             onClick={() => setShowChannelModal(true)}
-            className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded" 
+            className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
             aria-label="Add channel"
           >
             <PlusIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />

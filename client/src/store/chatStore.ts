@@ -455,6 +455,7 @@ interface ChatState {
     loadDirectFiles: (userId: string) => Promise<void>
     upsertDirectConversation: (conversation: Partial<DirectMessage> & { id: string }) => void
     markConversationVisited: (chatType: 'channel' | 'dm' | 'group', chatId: string) => Promise<void>
+    markAllConversationsRead: () => Promise<void>
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -1899,6 +1900,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
             await axios.post(`${API_URL}/messages/direct/${normalizedChatId}/visit`)
         } catch (error) {
             console.error(`Error marking ${chatType} visited:`, error)
+        }
+    },
+
+    markAllConversationsRead: async () => {
+        set((state) => ({
+            channels: state.channels.map((ch) => ({ ...ch, unreadCount: 0 })),
+            directMessages: state.directMessages.map((dm) => ({ ...dm, unreadCount: 0 })),
+            groupChats: state.groupChats.map((g) => ({ ...g, unreadCount: 0 })),
+        }))
+        try {
+            await axios.post(`${API_URL}/users/me/mark-all-read`)
+        } catch (error) {
+            console.error('Error marking all conversations as read:', error)
         }
     },
 

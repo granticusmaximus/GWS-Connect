@@ -7,6 +7,7 @@ import {
 	searchUsers,
 	getUserPublicKey,
 } from '../models/User.js';
+import db from '../database.js';
 
 const router = express.Router();
 
@@ -84,6 +85,36 @@ router.get('/public-key/:userId', authenticateToken, async (req, res) => {
 		res.json({ e2eePublicKey: JSON.parse(record.e2eePublicKey) });
 	} catch (error) {
 		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.post('/me/mark-all-read', authenticateToken, (req, res) => {
+	try {
+		const userId = req.user.id;
+		const now = new Date().toISOString();
+
+		db.prepare(`
+			INSERT INTO channel_visits (userId, channelId, lastVisitedAt)
+			SELECT ?, channelId, ?
+			FROM channel_members WHERE userId = ?
+			ON CONFLICT(userId, channelId) DO UPDATE SET lastVisitedAt = excluded.lastVisitedAt
+		`).run(userId, now, userId);
+
+		db.prepare(`
+			INSERT INTO group_chat_visits (userId, groupChatId, lastVisitedAt)
+			SELECT ?, groupChatId, ?
+			FROM group_chat_members WHERE userId = ?
+			ON CONFLICT(userId, groupChatId) DO UPDATE SET lastVisitedAt = excluded.lastVisitedAt
+		`).run(userId, now, userId);
+
+		db.prepare(`
+			UPDATE direct_message_visits SET lastVisitedAt = ? WHERE userId = ?
+		`).run(now, userId);
+
+		return res.json({ ok: true });
+	} catch (error) {
+		console.error('Error marking all read:', error);
+		return res.status(500).json({ message: 'Server error' });
 	}
 });
 
