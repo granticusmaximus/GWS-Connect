@@ -8,7 +8,7 @@ import {
 } from 'react'
 import axios from 'axios'
 import { API_URL } from '../config/runtime'
-import { useChatStore, type Message as ChatMessage, type TypingUser } from '../store/chatStore'
+import { useChatStore, type Message as ChatMessage, type TypingUser, type WorkspaceEmoji } from '../store/chatStore'
 import { useAuthStore } from '../store/authStore'
 import { getReplyPreviewText } from '../utils/replies'
 import { PaperAirplaneIcon, PaperClipIcon, PlusIcon, ChartBarIcon, ClockIcon, PhotoIcon, MicrophoneIcon, StopCircleIcon, XMarkIcon } from '@heroicons/react/24/outline'
@@ -57,6 +57,10 @@ interface EmojiContext {
   end: number   // current cursor position
   query: string
 }
+
+type EmojiSuggestion =
+  | (EmojiEntry & { kind: 'unicode' })
+  | (WorkspaceEmoji & { kind: 'custom' })
 
 const getEmojiContext = (text: string, cursorPosition: number): EmojiContext | null => {
   const beforeCursor = text.slice(0, cursorPosition)
@@ -169,6 +173,7 @@ export default function MessageInput({
     emitTypingStart,
     emitTypingStop,
     typingUsersByChatId,
+    workspaceEmoji,
   } = useChatStore()
 
   const typingConversationKey = channelId
@@ -375,9 +380,29 @@ export default function MessageInput({
     setSelectedMentionIndex(0)
   }, [mentionContext?.query, mentionContext?.start, mentionCandidates.length])
 
-  const emojiCandidates = useMemo<EmojiEntry[]>(
-    () => (emojiContext ? searchEmoji(emojiContext.query) : []),
-    [emojiContext],
+  const emojiCandidates = useMemo<EmojiSuggestion[]>(
+    () => {
+      if (!emojiContext) {
+        return []
+      }
+
+      const query = emojiContext.query.toLowerCase()
+      const customMatches = workspaceEmoji
+        .filter((emoji) => emoji.name.toLowerCase().includes(query))
+        .slice(0, 6)
+        .map((emoji) => ({
+          ...emoji,
+          kind: 'custom' as const,
+        }))
+      const builtInMatches = searchEmoji(emojiContext.query, Math.max(0, 8 - customMatches.length))
+        .map((emoji) => ({
+          ...emoji,
+          kind: 'unicode' as const,
+        }))
+
+      return [...customMatches, ...builtInMatches].slice(0, 8)
+    },
+    [emojiContext, workspaceEmoji],
   )
   const showEmojiAutocomplete = Boolean(!showMentions && emojiContext && emojiCandidates.length > 0)
 
@@ -532,12 +557,15 @@ export default function MessageInput({
     })
   }
 
-  const selectEmoji = (entry: EmojiEntry) => {
+  const selectEmoji = (entry: EmojiSuggestion) => {
     if (!emojiContext) return
 
     const before = message.slice(0, emojiContext.start)
     const after = message.slice(emojiContext.end)
-    const insertion = `${entry.char} `
+    const insertion =
+      entry.kind === 'custom'
+        ? `:${entry.name}: `
+        : `${entry.char} `
     const newMessage = `${before}${insertion}${after}`
     const nextCursor = before.length + insertion.length
 
@@ -870,7 +898,7 @@ export default function MessageInput({
             <div className="absolute left-0 bottom-12 w-72 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg py-1 z-20">
               {emojiCandidates.map((entry, index) => (
                 <button
-                  key={entry.char}
+                  key={entry.kind === 'custom' ? entry.id : entry.char}
                   type="button"
                   onClick={() => selectEmoji(entry)}
                   onMouseEnter={() => setSelectedEmojiIndex(index)}
@@ -880,8 +908,18 @@ export default function MessageInput({
                       : 'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800'
                   }`}
                 >
-                  <span className="text-xl leading-none w-7 flex-shrink-0 text-center">{entry.char}</span>
-                  <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">:{entry.names[0]}:</span>
+                  {entry.kind === 'custom' ? (
+                    <img
+                      src={entry.imageUrl}
+                      alt={`:${entry.name}:`}
+                      className="h-6 w-6 flex-shrink-0 object-contain"
+                    />
+                  ) : (
+                    <span className="w-7 flex-shrink-0 text-center text-xl leading-none">{entry.char}</span>
+                  )}
+                  <span className="text-xs font-mono text-gray-500 dark:text-gray-400">
+                    :{entry.kind === 'custom' ? entry.name : entry.names[0]}:
+                  </span>
                 </button>
               ))}
             </div>

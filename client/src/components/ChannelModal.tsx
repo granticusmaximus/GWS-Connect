@@ -15,6 +15,14 @@ interface Channel {
 	announcementOnly?: boolean;
 }
 
+interface ChannelWebhook {
+	id: string;
+	name: string;
+	token: string;
+	createdAt: string;
+	revokedAt?: string | null;
+}
+
 interface ChannelModalProps {
 	isOpen: boolean;
 	onClose: () => void;
@@ -43,6 +51,11 @@ export default function ChannelModal({
 	const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 	const [deleting, setDeleting] = useState(false);
 	const [toastMessage, setToastMessage] = useState('');
+	const [webhooks, setWebhooks] = useState<ChannelWebhook[]>([]);
+	const [webhooksLoading, setWebhooksLoading] = useState(false);
+	const [creatingWebhook, setCreatingWebhook] = useState(false);
+	const [revokingWebhookId, setRevokingWebhookId] = useState<string | null>(null);
+	const [webhookName, setWebhookName] = useState('');
 
 	useEffect(() => {
 		if (mode === 'edit' && channel) {
@@ -64,7 +77,44 @@ export default function ChannelModal({
 		setShowDeleteConfirm(false);
 		setDeleting(false);
 		setToastMessage('');
+		setWebhooks([]);
+		setWebhookName('');
 	}, [mode, channel, isOpen]);
+
+	useEffect(() => {
+		let cancelled = false;
+
+		const loadWebhooks = async () => {
+			if (!isOpen || mode !== 'edit' || !channel?.id) {
+				return;
+			}
+
+			setWebhooksLoading(true);
+			try {
+				const response = await axios.get(
+					`${API_URL}/webhooks/channel/${channel.id}`,
+				);
+				if (!cancelled) {
+					setWebhooks(Array.isArray(response.data) ? response.data : []);
+				}
+			} catch (error) {
+				console.error('Channel webhook load error:', error);
+				if (!cancelled) {
+					setWebhooks([]);
+				}
+			} finally {
+				if (!cancelled) {
+					setWebhooksLoading(false);
+				}
+			}
+		};
+
+		void loadWebhooks();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [channel?.id, isOpen, mode]);
 
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
@@ -149,6 +199,58 @@ export default function ChannelModal({
 			);
 		} finally {
 			setDeleting(false);
+		}
+	};
+
+	const handleCreateWebhook = async () => {
+		if (!channel?.id || !webhookName.trim()) {
+			return;
+		}
+
+		setCreatingWebhook(true);
+		try {
+			const response = await axios.post(
+				`${API_URL}/webhooks/channel/${channel.id}`,
+				{ name: webhookName.trim() },
+			);
+			setWebhooks((current) => [response.data, ...current]);
+			setWebhookName('');
+		} catch (error) {
+			console.error('Channel webhook create error:', error);
+			alert('Failed to create webhook');
+		} finally {
+			setCreatingWebhook(false);
+		}
+	};
+
+	const handleRevokeWebhook = async (webhookId: string) => {
+		setRevokingWebhookId(webhookId);
+		try {
+			await axios.delete(`${API_URL}/webhooks/${webhookId}`);
+			setWebhooks((current) =>
+				current.map((webhook) =>
+					webhook.id === webhookId
+						? { ...webhook, revokedAt: new Date().toISOString() }
+						: webhook,
+				),
+			);
+		} catch (error) {
+			console.error('Channel webhook revoke error:', error);
+			alert('Failed to revoke webhook');
+		} finally {
+			setRevokingWebhookId(null);
+		}
+	};
+
+	const copyWebhookUrl = async (token: string) => {
+		try {
+			const url = `${window.location.origin}${API_URL}/webhooks/${token}/incoming`;
+			await navigator.clipboard.writeText(url);
+			setToastMessage('Webhook URL copied');
+			window.setTimeout(() => setToastMessage(''), 1600);
+		} catch (error) {
+			console.error('Failed to copy webhook URL:', error);
+			alert('Unable to copy the webhook URL');
 		}
 	};
 
@@ -339,6 +441,95 @@ export default function ChannelModal({
 								<p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
 									Only managers and admins can post. Members can read only.
 								</p>
+							</div>
+						)}
+
+						{mode === 'edit' && channel && (
+							<div className="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
+								<div className="flex items-center justify-between gap-3">
+									<div>
+										<label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+											Inbound Webhooks
+										</label>
+										<p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+											Create channel-specific webhook URLs for automations and external systems.
+										</p>
+									</div>
+								</div>
+
+								<div className="mt-3 flex gap-2">
+									<input
+										type="text"
+										value={webhookName}
+										onChange={(e) => setWebhookName(e.target.value)}
+										placeholder="Webhook name"
+										className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-transparent focus:ring-2 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+										disabled={loading || deleting || creatingWebhook}
+									/>
+									<button
+										type="button"
+										onClick={() => void handleCreateWebhook()}
+										disabled={loading || deleting || creatingWebhook || !webhookName.trim()}
+										className="rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-primary-700 disabled:opacity-60"
+									>
+										{creatingWebhook ? 'Creating...' : 'Create'}
+									</button>
+								</div>
+
+								<div className="mt-3 space-y-2">
+									{webhooksLoading ? (
+										<div className="text-sm text-gray-500 dark:text-gray-400">
+											Loading webhooks...
+										</div>
+									) : webhooks.length === 0 ? (
+										<div className="text-sm text-gray-500 dark:text-gray-400">
+											No webhooks created yet.
+										</div>
+									) : (
+										webhooks.map((webhook) => {
+											const isRevoked = Boolean(webhook.revokedAt);
+											return (
+												<div
+													key={webhook.id}
+													className="rounded-lg border border-gray-200 px-3 py-3 dark:border-gray-700"
+												>
+													<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+														<div className="min-w-0">
+															<div className="truncate text-sm font-medium text-gray-900 dark:text-white">
+																{webhook.name}
+															</div>
+															<div className="mt-1 break-all text-xs text-gray-500 dark:text-gray-400">
+																{`${window.location.origin}${API_URL}/webhooks/${webhook.token}/incoming`}
+															</div>
+															<div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+																Created {new Date(webhook.createdAt).toLocaleString()}
+																{isRevoked ? ' • Revoked' : ''}
+															</div>
+														</div>
+														<div className="flex gap-2">
+															<button
+																type="button"
+																onClick={() => void copyWebhookUrl(webhook.token)}
+																disabled={isRevoked}
+																className="rounded-lg border border-gray-300 px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700 disabled:opacity-60"
+															>
+																Copy URL
+															</button>
+															<button
+																type="button"
+																onClick={() => void handleRevokeWebhook(webhook.id)}
+																disabled={isRevoked || revokingWebhookId === webhook.id}
+																className="rounded-lg border border-red-300 px-3 py-2 text-xs font-medium text-red-600 transition hover:bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-900/20 disabled:opacity-60"
+															>
+																{revokingWebhookId === webhook.id ? 'Revoking...' : 'Revoke'}
+															</button>
+														</div>
+													</div>
+												</div>
+											);
+										})
+									)}
+								</div>
 							</div>
 						)}
 

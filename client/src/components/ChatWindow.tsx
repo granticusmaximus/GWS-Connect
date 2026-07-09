@@ -1480,6 +1480,7 @@ export default function ChatWindow() {
                                   isOwn={isOwn}
                                   mentions={message.mentions}
                                   onMentionClick={handleMentionClick}
+                                  workspaceEmoji={workspaceEmoji}
                                   onMentionHoverStart={
                                     !isOwn
                                       ? (event, mention) => {
@@ -1895,7 +1896,7 @@ export default function ChatWindow() {
               </div>
               <div
                 className="chat-markdown mt-1 break-words text-sm text-gray-700 dark:text-gray-200"
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content, workspaceEmoji) }}
               />
             </div>
           ))}
@@ -1921,6 +1922,7 @@ export default function ChatWindow() {
         onOpenMessage={handleOpenBookmarkedMessage}
         onRemoveBookmark={(message) => void handleToggleBookmark(message)}
         resolveContextLabel={resolveBookmarkContextLabel}
+        workspaceEmoji={workspaceEmoji}
       />
     )
   }
@@ -2322,6 +2324,7 @@ export default function ChatWindow() {
             setActiveTab('messages')
           }
         }}
+        workspaceEmoji={workspaceEmoji}
         footer={
           threadRootMessage && !isAnnouncementChannel ? (
             <MessageInput

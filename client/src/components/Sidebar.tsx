@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import axios from 'axios'
 import { useChatStore } from '../store/chatStore'
+import { useCallStore } from '../store/callStore'
+import { useAuthStore } from '../store/authStore'
 import { API_URL } from '../config/runtime'
-import { CheckCircleIcon, HashtagIcon, PencilSquareIcon, PlusIcon, TrashIcon, UserCircleIcon, UserGroupIcon, XMarkIcon } from '@heroicons/react/24/outline'
+import { CheckCircleIcon, HashtagIcon, PencilSquareIcon, PlusIcon, SpeakerWaveIcon, TrashIcon, UserCircleIcon, UserGroupIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { formatStatusForDisplay } from '../utils/userStatus'
 import UserSearchModal from './UserSearchModal'
 import ChannelModal from './ChannelModal'
@@ -73,11 +75,16 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
     setActiveGroupChat,
     loadChannels,
     loadGroupChats,
+    loadVoiceChannels,
+    loadWorkspaceEmoji,
+    voiceChannels,
     requestLatestMessageView,
     onlineUsers,
     presenceByUserId,
     markAllConversationsRead,
   } = useChatStore()
+  const { activeCallId, isConnecting, startCall } = useCallStore()
+  const user = useAuthStore((state) => state.user)
   const [showUserSearch, setShowUserSearch] = useState(false)
   const [showChannelModal, setShowChannelModal] = useState(false)
   const [showGroupChatModal, setShowGroupChatModal] = useState(false)
@@ -129,7 +136,14 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
   useEffect(() => {
     void loadGroupChats()
     void loadSidebarSections()
-  }, [loadGroupChats])
+    void loadVoiceChannels()
+    void loadWorkspaceEmoji()
+  }, [loadGroupChats, loadVoiceChannels, loadWorkspaceEmoji])
+
+  const activeVoiceChannelId = useMemo(
+    () => (activeCallId?.startsWith('voice:') ? activeCallId.slice('voice:'.length) : null),
+    [activeCallId],
+  )
 
   const handleChannelSelect = (channelId: string) => {
     requestLatestMessageView('channel', channelId)
@@ -300,13 +314,15 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
             >
               <PencilSquareIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
-            <button
-              onClick={() => setShowChannelModal(true)}
-              className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-              aria-label="Add channel"
-            >
-              <PlusIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-            </button>
+            {user?.role !== 'guest' && (
+              <button
+                onClick={() => setShowChannelModal(true)}
+                className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                aria-label="Add channel"
+              >
+                <PlusIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -417,13 +433,15 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
           <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase">
             Group Chats
           </h2>
-          <button
-            onClick={() => setShowGroupChatModal(true)}
-            className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-            aria-label="Add group chat"
-          >
-            <PlusIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-          </button>
+          {user?.role !== 'guest' && (
+            <button
+              onClick={() => setShowGroupChatModal(true)}
+              className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+              aria-label="Add group chat"
+            >
+              <PlusIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
+            </button>
+          )}
         </div>
         <div className="space-y-1">
           {groupChats.length === 0 ? (
@@ -450,6 +468,53 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
                 )}
               </button>
             ))
+          )}
+        </div>
+      </div>
+
+      <div className="border-b border-gray-200 p-4 dark:border-gray-700">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase text-gray-700 dark:text-gray-300">
+            Voice Channels
+          </h2>
+        </div>
+        <div className="space-y-2">
+          {voiceChannels.length === 0 ? (
+            <div className="py-2 text-sm text-gray-500 dark:text-gray-400">
+              No voice channels available
+            </div>
+          ) : (
+            voiceChannels.map((voiceChannel) => {
+              const isActiveVoice = activeVoiceChannelId === voiceChannel.id
+              return (
+                <button
+                  key={voiceChannel.id}
+                  type="button"
+                  onClick={() => void startCall('voice', voiceChannel.id, false)}
+                  disabled={isConnecting && !isActiveVoice}
+                  className={`w-full rounded-xl border px-3 py-2 text-left transition ${
+                    isActiveVoice
+                      ? 'border-primary-300 bg-primary-50 text-primary-700 dark:border-primary-800 dark:bg-primary-900/30 dark:text-primary-200'
+                      : 'border-gray-200 bg-white hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <SpeakerWaveIcon className="h-5 w-5 flex-shrink-0" />
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                      {voiceChannel.name}
+                    </span>
+                    <span className="rounded-full bg-black/5 px-2 py-0.5 text-[11px] font-semibold dark:bg-white/10">
+                      {voiceChannel.participants.length}
+                    </span>
+                  </div>
+                  <div className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">
+                    {voiceChannel.participants.length > 0
+                      ? voiceChannel.participants.map((participant) => participant.username).join(', ')
+                      : voiceChannel.description || 'Join the room'}
+                  </div>
+                </button>
+              )
+            })
           )}
         </div>
       </div>
@@ -541,6 +606,7 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
         onSuccess={() => {
           void loadChannels()
           void loadSidebarSections()
+          void loadVoiceChannels()
         }}
         mode="create"
       />
