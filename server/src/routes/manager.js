@@ -159,23 +159,27 @@ router.post(
 				return res.status(404).json({ message: 'Channel not found' });
 			}
 
-			if (!channel.isPrivate && targetUser.role !== 'guest') {
-				return res.status(400).json({
-					message:
-						'Members can only be added directly to private channels unless the account is a guest',
-				});
-			}
-
 			if (!userId) {
 				return res.status(400).json({ message: 'User ID required' });
 			}
 
 			const targetUser = db
-				.prepare('SELECT id, username, role FROM users WHERE id = ?')
+				.prepare(
+					"SELECT id, username, role, COALESCE(isGuest, 0) AS isGuest FROM users WHERE id = ?",
+				)
 				.get(userId);
 
 			if (!targetUser) {
 				return res.status(404).json({ message: 'User not found' });
+			}
+
+			const targetUserRole = targetUser.isGuest ? 'guest' : targetUser.role;
+
+			if (!channel.isPrivate && targetUserRole !== 'guest') {
+				return res.status(400).json({
+					message:
+						'Members can only be added directly to private channels unless the account is a guest',
+				});
 			}
 
 			db.prepare(

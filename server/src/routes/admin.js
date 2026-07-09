@@ -224,6 +224,11 @@ router.put(
 				role === 'guest' ? 1 : 0,
 				req.params.userId,
 			);
+			if (role === 'guest') {
+				db.prepare('DELETE FROM channel_managers WHERE userId = ?').run(
+					req.params.userId,
+				);
+			}
 			logAuditEvent({
 				actorId: req.user.id,
 				action: 'user.role.update',
