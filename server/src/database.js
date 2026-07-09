@@ -37,6 +37,7 @@ db.exec(`
     e2eeIv TEXT,
     theme TEXT DEFAULT 'light' CHECK(theme IN ('light', 'dark')),
     appearOffline INTEGER DEFAULT 0 CHECK(appearOffline IN (0, 1)),
+    isGuest INTEGER DEFAULT 0 CHECK(isGuest IN (0, 1)),
     statusEmoji TEXT,
     statusText TEXT,
     statusClearsAt DATETIME,
@@ -116,6 +117,8 @@ db.exec(`
     fileName TEXT,
     fileType TEXT,
     filePath TEXT,
+    senderNameOverride TEXT,
+    senderAvatarOverride TEXT,
     cipherText TEXT,
     cipherIv TEXT,
     isEncrypted INTEGER DEFAULT 0 CHECK(isEncrypted IN (0, 1)),
@@ -216,6 +219,21 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(userId);
 
+  CREATE TABLE IF NOT EXISTS link_previews (
+    url TEXT PRIMARY KEY,
+    resolvedUrl TEXT,
+    title TEXT,
+    description TEXT,
+    imageUrl TEXT,
+    siteName TEXT,
+    faviconUrl TEXT,
+    fetchedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expiresAt DATETIME
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_link_previews_expires_at
+    ON link_previews(expiresAt);
+
   CREATE TABLE IF NOT EXISTS user_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     userId INTEGER NOT NULL,
@@ -256,6 +274,55 @@ db.exec(`
     ON user_notifications(userId, isRead, createdAt DESC);
   CREATE INDEX IF NOT EXISTS idx_user_notifications_message
     ON user_notifications(messageId);
+
+  CREATE TABLE IF NOT EXISTS user_notification_prefs (
+    userId INTEGER NOT NULL,
+    targetType TEXT NOT NULL CHECK(targetType IN ('channel', 'dm', 'group')),
+    targetId TEXT NOT NULL,
+    preference TEXT NOT NULL DEFAULT 'all' CHECK(preference IN ('all', 'mentions', 'none')),
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (userId, targetType, targetId),
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_notification_prefs_user
+    ON user_notification_prefs(userId, targetType, targetId);
+
+  CREATE TABLE IF NOT EXISTS user_bookmarks (
+    userId INTEGER NOT NULL,
+    messageId INTEGER NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (userId, messageId),
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_bookmarks_user
+    ON user_bookmarks(userId, createdAt DESC);
+
+  CREATE TABLE IF NOT EXISTS sidebar_sections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sidebar_sections_user
+    ON sidebar_sections(userId, position, id);
+
+  CREATE TABLE IF NOT EXISTS sidebar_section_items (
+    sectionId INTEGER NOT NULL,
+    channelId INTEGER NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (sectionId, channelId),
+    FOREIGN KEY (sectionId) REFERENCES sidebar_sections(id) ON DELETE CASCADE,
+    FOREIGN KEY (channelId) REFERENCES channels(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sidebar_section_items_section
+    ON sidebar_section_items(sectionId, position, channelId);
 
   CREATE TABLE IF NOT EXISTS password_reset_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -341,6 +408,14 @@ if (!messageColumns.includes('threadRootMessageId')) {
 	db.prepare('ALTER TABLE messages ADD COLUMN threadRootMessageId INTEGER').run();
 }
 
+if (!messageColumns.includes('senderNameOverride')) {
+	db.prepare('ALTER TABLE messages ADD COLUMN senderNameOverride TEXT').run();
+}
+
+if (!messageColumns.includes('senderAvatarOverride')) {
+	db.prepare('ALTER TABLE messages ADD COLUMN senderAvatarOverride TEXT').run();
+}
+
 const userColumns = db
 	.prepare("PRAGMA table_info('users')")
 	.all()
@@ -376,6 +451,10 @@ if (!userColumns.includes('appearOffline')) {
 	db.prepare(
 		'ALTER TABLE users ADD COLUMN appearOffline INTEGER DEFAULT 0',
 	).run();
+}
+
+if (!userColumns.includes('isGuest')) {
+	db.prepare('ALTER TABLE users ADD COLUMN isGuest INTEGER DEFAULT 0').run();
 }
 
 if (!userColumns.includes('statusEmoji')) {
@@ -422,6 +501,93 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_message_reports_status ON message_reports(status, createdAt);
+
+  CREATE TABLE IF NOT EXISTS scheduled_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId INTEGER NOT NULL,
+    channelId INTEGER,
+    recipientId INTEGER,
+    groupChatId INTEGER,
+    content TEXT DEFAULT '',
+    cipherText TEXT,
+    cipherIv TEXT,
+    isEncrypted INTEGER DEFAULT 0 CHECK(isEncrypted IN (0, 1)),
+    keyGeneration INTEGER,
+    replyToMessageId INTEGER,
+    threadRootMessageId INTEGER,
+    deliverAt DATETIME NOT NULL,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'cancelled', 'failed')),
+    errorMessage TEXT,
+    sentMessageId INTEGER,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    sentAt DATETIME,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (channelId) REFERENCES channels(id) ON DELETE CASCADE,
+    FOREIGN KEY (recipientId) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (groupChatId) REFERENCES group_chats(id) ON DELETE CASCADE,
+    FOREIGN KEY (replyToMessageId) REFERENCES messages(id) ON DELETE SET NULL,
+    FOREIGN KEY (threadRootMessageId) REFERENCES messages(id) ON DELETE SET NULL,
+    FOREIGN KEY (sentMessageId) REFERENCES messages(id) ON DELETE SET NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_scheduled_messages_due
+    ON scheduled_messages(status, deliverAt);
+
+  CREATE TABLE IF NOT EXISTS webhooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channelId INTEGER NOT NULL,
+    createdBy INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    avatarUrl TEXT DEFAULT '',
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    revokedAt DATETIME,
+    FOREIGN KEY (channelId) REFERENCES channels(id) ON DELETE CASCADE,
+    FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_webhooks_channel_active
+    ON webhooks(channelId, revokedAt, createdAt DESC);
+
+  CREATE TABLE IF NOT EXISTS workspace_emoji (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    filePath TEXT NOT NULL,
+    mimeType TEXT NOT NULL,
+    createdBy INTEGER NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_workspace_emoji_name
+    ON workspace_emoji(name);
+
+  CREATE TABLE IF NOT EXISTS voice_channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channelId INTEGER NOT NULL UNIQUE,
+    name TEXT,
+    createdBy INTEGER NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (channelId) REFERENCES channels(id) ON DELETE CASCADE,
+    FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_voice_channels_channel
+    ON voice_channels(channelId);
+
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actorId INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    targetType TEXT NOT NULL,
+    targetId TEXT,
+    metadata TEXT DEFAULT '{}',
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (actorId) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_audit_log_created_at
+    ON audit_log(createdAt DESC);
 `);
 
 if (!messageColumns.includes('isPinned')) {

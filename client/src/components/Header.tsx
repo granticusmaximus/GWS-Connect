@@ -254,7 +254,7 @@ export default function Header({ onMenuClick, isSidebarOpen = false }: HeaderPro
                       type="text"
                       value={searchQuery}
                       onChange={(event) => setSearchQuery(event.target.value)}
-                      placeholder="Search this conversation..."
+                      placeholder="Search... from: in: before: after:"
                       autoFocus
                       className="flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm text-gray-900 outline-none focus:border-primary-400 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
                     />
@@ -266,7 +266,7 @@ export default function Header({ onMenuClick, isSidebarOpen = false }: HeaderPro
                     </button>
                   </form>
                   <div className="px-4 pt-2 pb-1 text-xs text-gray-400 dark:text-gray-500">
-                    Searches messages loaded in this session
+                    Supports metadata filters like from:, in:, before:, and after:
                   </div>
                   <div className="max-h-96 overflow-y-auto">
                     {isSearching ? (

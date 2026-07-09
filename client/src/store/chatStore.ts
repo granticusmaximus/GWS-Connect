@@ -287,6 +287,7 @@ export interface Message {
     reactions?: ReactionSummary[]
     isPinned?: boolean
     pinnedAt?: string | null
+    isBookmarked?: boolean
     expiresAt?: string | null
 }
 
@@ -359,6 +360,28 @@ export interface GroupChat {
     keyGenerationRotatedAt?: string
 }
 
+export interface WorkspaceEmoji {
+    id: string
+    name: string
+    imageUrl: string
+    createdAt?: string
+}
+
+export interface VoiceChannelParticipant {
+    userId: string
+    username: string
+    avatar?: string | null
+}
+
+export interface VoiceChannel {
+    id: string
+    channelId: string
+    name: string
+    description?: string
+    isPrivate?: boolean
+    participants: VoiceChannelParticipant[]
+}
+
 export interface TypingUser {
     userId: string
     username: string
@@ -400,6 +423,8 @@ interface ChatState {
     channels: Channel[]
     directMessages: DirectMessage[]
     groupChats: GroupChat[]
+    voiceChannels: VoiceChannel[]
+    workspaceEmoji: WorkspaceEmoji[]
     messages: { [key: string]: Message[] }
     filesByChatId: { [key: string]: SharedFileItem[] }
     activeChannel: string | null
@@ -419,6 +444,7 @@ interface ChatState {
     emitTypingStart: (channelId?: string, recipientId?: string, groupChatId?: string) => void
     emitTypingStop: (channelId?: string, recipientId?: string, groupChatId?: string) => void
     sendMessage: (content: string, channelId?: string, recipientId?: string, file?: File, replyToMessageId?: string | null, groupChatId?: string) => Promise<boolean>
+    scheduleMessage: (content: string, deliverAt: string, channelId?: string, recipientId?: string, replyToMessageId?: string | null, groupChatId?: string) => Promise<boolean>
     sendGif: (gifUrl: string, title: string, channelId?: string, recipientId?: string, replyToMessageId?: string | null, groupChatId?: string) => Promise<boolean>
     createPoll: (question: string, options: string[], channelId?: string, recipientId?: string, durationMinutes?: number, replyToMessageId?: string | null, groupChatId?: string) => Promise<boolean>
     voteOnPoll: (pollId: string, optionId: string) => Promise<boolean>
@@ -427,12 +453,17 @@ interface ChatState {
     deleteMessage: (messageId: string) => Promise<boolean>
     archiveMessage: (messageId: string) => Promise<boolean>
     togglePinMessage: (messageId: string) => Promise<boolean>
+    toggleBookmarkMessage: (messageId: string) => Promise<boolean>
     loadPinnedMessages: (chatType: 'channel' | 'dm' | 'group', chatId: string) => Promise<Message[]>
+    loadBookmarkedMessages: () => Promise<Message[]>
+    loadThreadMessages: (messageId: string) => Promise<{ threadRootMessageId: string; messages: Message[] } | null>
     searchMessages: (chatType: 'channel' | 'dm' | 'group', chatId: string, query: string) => Promise<Message[]>
     setActiveChannel: (channelId: string | null) => void
     setActiveDM: (dmId: string | null) => void
     setActiveGroupChat: (groupChatId: string | null) => void
     loadGroupChats: () => Promise<void>
+    loadVoiceChannels: () => Promise<void>
+    loadWorkspaceEmoji: () => Promise<void>
     createGroupChat: (name: string, memberIds: string[]) => Promise<GroupChat | null>
     loadGroupChatMessages: (groupChatId: string) => Promise<void>
     leaveGroupChat: (groupChatId: string) => Promise<boolean>
@@ -467,6 +498,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     channels: [],
     directMessages: [],
     groupChats: [],
+    voiceChannels: [],
+    workspaceEmoji: [],
     messages: {},
     filesByChatId: {},
     activeChannel: null,
@@ -522,6 +555,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             void get().loadChannels()
             void get().loadDirectConversations()
             void get().loadGroupChats()
+            void get().loadVoiceChannels()
+            void get().loadWorkspaceEmoji()
         })
 
         socket.on('group-chats', (groupChats: GroupChat[]) => {
@@ -651,6 +686,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
 
             set({ channels: normalized })
+            void get().loadVoiceChannels()
         })
 
         socket.on('channel-access-removed', (payload: { channelId?: string; message?: string }) => {
@@ -678,6 +714,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }))
 
             void get().loadChannels()
+            void get().loadVoiceChannels()
+        })
+
+        socket.on('voice-channel-presence', (payload: { voiceChannelId: string; participants: VoiceChannelParticipant[] }) => {
+            set((state) => ({
+                voiceChannels: state.voiceChannels.map((voiceChannel) =>
+                    voiceChannel.id === String(payload.voiceChannelId)
+                        ? {
+                            ...voiceChannel,
+                            participants: (payload.participants || []).map((participant) => ({
+                                ...participant,
+                                userId: String(participant.userId),
+                                avatar: participant.avatar || null,
+                            })),
+                        }
+                        : voiceChannel,
+                ),
+            }))
         })
 
         socket.on('notification:new', (notification: InAppNotification) => {
@@ -1293,6 +1347,121 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
     },
 
+    scheduleMessage: async (content, deliverAt, channelId, recipientId, replyToMessageId, groupChatId) => {
+        let payload: {
+            content: string
+            channelId?: string
+            recipientId?: string
+            groupChatId?: string
+            replyToMessageId?: string | null
+            cipherText?: string
+            cipherIv?: string
+            isEncrypted?: boolean
+            deliverAt: string
+        } = {
+            content,
+            channelId,
+            recipientId,
+            groupChatId,
+            replyToMessageId,
+            deliverAt,
+        }
+
+        if (channelId) {
+            const { e2eePrivateKey, user } = useAuthStore.getState()
+
+            if (!e2eePrivateKey || !user) {
+                useNotificationStore.getState().addToast({
+                    id: `schedule-error-${Date.now()}`,
+                    title: 'Message not scheduled',
+                    body: 'End-to-end encryption is not ready yet. Please try again in a moment.',
+                })
+                return false
+            }
+
+            try {
+                const channelKey = await ensureChannelKey(String(channelId), e2eePrivateKey, String(user.id), get().socket)
+                const encrypted = await encryptMessage(content, channelKey)
+                payload = {
+                    content: '',
+                    channelId,
+                    replyToMessageId,
+                    cipherText: encrypted.cipherText,
+                    cipherIv: encrypted.iv,
+                    isEncrypted: true,
+                    deliverAt,
+                }
+            } catch (error) {
+                console.error('Channel schedule encryption failed:', error)
+                return false
+            }
+        } else if (recipientId) {
+            const { e2eePrivateKey, user } = useAuthStore.getState()
+
+            if (!e2eePrivateKey || !user) {
+                useNotificationStore.getState().addToast({
+                    id: `schedule-error-${Date.now()}`,
+                    title: 'Message not scheduled',
+                    body: 'End-to-end encryption is not ready yet. Please try again in a moment.',
+                })
+                return false
+            }
+
+            try {
+                const sharedKey = await getSharedKey(e2eePrivateKey, String(recipientId))
+                const encrypted = await encryptMessage(content, sharedKey)
+                payload = {
+                    content: '',
+                    recipientId,
+                    replyToMessageId,
+                    cipherText: encrypted.cipherText,
+                    cipherIv: encrypted.iv,
+                    isEncrypted: true,
+                    deliverAt,
+                }
+            } catch (error) {
+                console.error('DM schedule encryption failed:', error)
+                return false
+            }
+        } else if (groupChatId) {
+            const { e2eePrivateKey, user } = useAuthStore.getState()
+
+            if (!e2eePrivateKey || !user) {
+                useNotificationStore.getState().addToast({
+                    id: `schedule-error-${Date.now()}`,
+                    title: 'Message not scheduled',
+                    body: 'End-to-end encryption is not ready yet. Please try again in a moment.',
+                })
+                return false
+            }
+
+            try {
+                const groupKey = await getGroupKey(String(groupChatId), e2eePrivateKey)
+                const encrypted = await encryptMessage(content, groupKey)
+                payload = {
+                    content: '',
+                    groupChatId,
+                    replyToMessageId,
+                    cipherText: encrypted.cipherText,
+                    cipherIv: encrypted.iv,
+                    isEncrypted: true,
+                    deliverAt,
+                }
+            } catch (error) {
+                console.error('Group schedule encryption failed:', error)
+                return false
+            }
+        }
+
+        try {
+            await axios.post(`${API_URL}/messages/scheduled`, payload)
+            return true
+        } catch (error) {
+            console.error('Error scheduling message:', error)
+            return false
+        }
+    },
+
     sendGif: async (gifUrl: string, title: string, channelId?: string, recipientId?: string, replyToMessageId?: string | null, groupChatId?: string) => {
         const { socket } = get()
 
@@ -1501,6 +1670,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
     },
 
+    toggleBookmarkMessage: async (messageId) => {
+        try {
+            const response = await axios.post(`${API_URL}/messages/${messageId}/bookmark`)
+            const isBookmarked = Boolean(response.data?.isBookmarked)
+            set((state) => ({
+                messages: updateMessageFields(state.messages, messageId, {
+                    isBookmarked,
+                }),
+            }))
+            return true
+        } catch (error) {
+            console.error('Bookmark toggle failed:', error)
+            return false
+        }
+    },
+
     loadPinnedMessages: async (chatType, chatId) => {
         try {
             const token = localStorage.getItem('token')
@@ -1521,20 +1706,87 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
     },
 
+    loadBookmarkedMessages: async () => {
+        try {
+            const response = await axios.get(`${API_URL}/messages/bookmarks`)
+            return await Promise.all(
+                response.data.map((message: Message) => processIncomingMessage(message)),
+            )
+        } catch (error) {
+            console.error('Error loading bookmarked messages:', error)
+            return []
+        }
+    },
+
+    loadThreadMessages: async (messageId) => {
+        try {
+            const response = await axios.get(`${API_URL}/messages/${messageId}/replies`)
+            const processed = await Promise.all(
+                (response.data?.messages || []).map((message: Message) =>
+                    processIncomingMessage(message),
+                ),
+            )
+
+            set((state) => {
+                const nextMessages = { ...state.messages }
+                const currentUserId = useAuthStore.getState().user?.id
+
+                processed.forEach((message) => {
+                    const key = getConversationKey(message, currentUserId)
+                    if (!key) return
+                    nextMessages[key] = mergeConversationMessages(
+                        nextMessages[key] || [],
+                        [message],
+                    )
+                })
+
+                return { messages: nextMessages }
+            })
+
+            return {
+                threadRootMessageId: String(response.data?.threadRootMessageId || messageId),
+                messages: processed,
+            }
+        } catch (error) {
+            console.error('Error loading thread messages:', error)
+            return null
+        }
+    },
+
     searchMessages: async (_chatType, chatId, query) => {
-        // All messages are E2EE so server-side FTS search is no longer
-        // possible - the server never has access to decrypted content.
-        // Search the already-decrypted messages in local state instead.
-        // Trade-off: only finds messages loaded in the current session,
-        // not full history. Disclosed in the search UI.
-        const loaded = get().messages[chatId] || []
-        const lower = query.toLowerCase()
-        return loaded.filter(
-            (message) =>
-                !message.isDeleted &&
-                typeof message.content === 'string' &&
-                message.content.toLowerCase().includes(lower)
-        )
+        try {
+            const response = await axios.get(`${API_URL}/search`, {
+                params: {
+                    chatType: _chatType,
+                    chatId,
+                    q: query,
+                },
+            })
+            const processed = await Promise.all(
+                (response.data?.messages || []).map((message: Message) => processIncomingMessage(message)),
+            )
+            const lower = String(response.data?.query || '').toLowerCase()
+
+            return processed
+                .filter((message) => {
+                    if (message.isDeleted) {
+                        return false
+                    }
+
+                    if (!lower) {
+                        return true
+                    }
+
+                    return typeof message.content === 'string' && message.content.toLowerCase().includes(lower)
+                })
+                .sort(
+                    (left, right) =>
+                        new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
+                )
+        } catch (error) {
+            console.error('Error searching messages:', error)
+            return []
+        }
     },
 
     setActiveChannel: (channelId: string | null) => {
@@ -1701,10 +1953,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         activeChannel,
                     ),
                 }))
+                void get().loadVoiceChannels()
                 return
             }
 
             set({ channels: normalized })
+            void get().loadVoiceChannels()
         } catch (error) {
             console.error('Error loading channels:', error)
         }
@@ -1946,6 +2200,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
             set({ groupChats: response.data.map(normalizeGroupChat) })
         } catch (error) {
             console.error('Error loading group chats:', error)
+        }
+    },
+
+    loadVoiceChannels: async () => {
+        try {
+            const response = await axios.get(`${API_URL}/voice-channels`)
+            set({
+                voiceChannels: Array.isArray(response.data)
+                    ? response.data.map(normalizeVoiceChannel)
+                    : [],
+            })
+        } catch (error) {
+            console.error('Error loading voice channels:', error)
+        }
+    },
+
+    loadWorkspaceEmoji: async () => {
+        try {
+            const response = await axios.get(`${API_URL}/workspace-emoji`)
+            set({
+                workspaceEmoji: Array.isArray(response.data)
+                    ? response.data.map(normalizeWorkspaceEmoji)
+                    : [],
+            })
+        } catch (error) {
+            console.error('Error loading workspace emoji:', error)
         }
     },
 
@@ -2345,6 +2625,28 @@ const normalizeGroupChat = (group: GroupChat): GroupChat => ({
     members: (group.members || []).map((member) => ({ ...member, id: String(member.id) })),
     unreadCount: Number(group.unreadCount || 0),
     lastMessageAt: group.lastMessageAt || null,
+})
+
+const normalizeVoiceChannel = (voiceChannel: VoiceChannel): VoiceChannel => ({
+    ...voiceChannel,
+    id: String(voiceChannel.id),
+    channelId: String(voiceChannel.channelId),
+    description: voiceChannel.description || '',
+    isPrivate: Boolean(voiceChannel.isPrivate),
+    participants: Array.isArray(voiceChannel.participants)
+        ? voiceChannel.participants.map((participant) => ({
+            ...participant,
+            userId: String(participant.userId),
+            avatar: participant.avatar || null,
+        }))
+        : [],
+})
+
+const normalizeWorkspaceEmoji = (emoji: WorkspaceEmoji): WorkspaceEmoji => ({
+    ...emoji,
+    id: String(emoji.id),
+    name: String(emoji.name),
+    imageUrl: String(emoji.imageUrl),
 })
 
 const normalizeDirectConversation = (

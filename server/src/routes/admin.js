@@ -15,6 +15,7 @@ import {
 	sendTemporaryPasswordEmail,
 	sendAdminResetPasswordEmail,
 } from '../services/email.js';
+import { listAuditEvents, logAuditEvent } from '../services/auditLog.js';
 
 const router = express.Router();
 
@@ -47,6 +48,12 @@ router.post(
 				`UPDATE channels SET status = 'approved' WHERE id = ?`,
 			);
 			stmt.run(req.params.channelId);
+			logAuditEvent({
+				actorId: req.user.id,
+				action: 'channel.approve',
+				targetType: 'channel',
+				targetId: req.params.channelId,
+			});
 
 			res.json({ message: 'Channel approved successfully' });
 		} catch (error) {
@@ -67,6 +74,12 @@ router.post(
 				`UPDATE channels SET status = 'rejected' WHERE id = ?`,
 			);
 			stmt.run(req.params.channelId);
+			logAuditEvent({
+				actorId: req.user.id,
+				action: 'channel.reject',
+				targetType: 'channel',
+				targetId: req.params.channelId,
+			});
 
 			res.json({ message: 'Channel rejected' });
 		} catch (error) {
@@ -103,6 +116,13 @@ router.post(
       VALUES (?, ?, ?)
     `);
 			stmt.run(req.params.channelId, userId, req.user.id);
+			logAuditEvent({
+				actorId: req.user.id,
+				action: 'channel.manager.assign',
+				targetType: 'channel',
+				targetId: req.params.channelId,
+				metadata: { userId: String(userId) },
+			});
 
 			res.json({ message: 'Manager assigned successfully' });
 		} catch (error) {
@@ -123,6 +143,13 @@ router.delete(
 				`DELETE FROM channel_managers WHERE channelId = ? AND userId = ?`,
 			);
 			stmt.run(req.params.channelId, req.params.userId);
+			logAuditEvent({
+				actorId: req.user.id,
+				action: 'channel.manager.remove',
+				targetType: 'channel',
+				targetId: req.params.channelId,
+				metadata: { userId: String(req.params.userId) },
+			});
 
 			res.json({ message: 'Manager removed successfully' });
 		} catch (error) {
@@ -136,7 +163,9 @@ router.delete(
 router.get('/users', authenticateToken, requireAdmin, (req, res) => {
 	try {
 		const stmt = db.prepare(`
-      SELECT id, username, email, role, avatar, createdAt
+      SELECT id, username, email,
+             CASE WHEN COALESCE(isGuest, 0) = 1 THEN 'guest' ELSE role END AS role,
+             avatar, createdAt
       FROM users
       ORDER BY createdAt DESC
     `);
@@ -186,12 +215,22 @@ router.put(
 		try {
 			const { role } = req.body;
 
-			if (!['user', 'manager', 'admin'].includes(role)) {
+			if (!['user', 'manager', 'admin', 'guest'].includes(role)) {
 				return res.status(400).json({ message: 'Invalid role' });
 			}
 
-			const stmt = db.prepare(`UPDATE users SET role = ? WHERE id = ?`);
-			stmt.run(role, req.params.userId);
+			db.prepare(`UPDATE users SET role = ?, isGuest = ? WHERE id = ?`).run(
+				role === 'guest' ? 'user' : role,
+				role === 'guest' ? 1 : 0,
+				req.params.userId,
+			);
+			logAuditEvent({
+				actorId: req.user.id,
+				action: 'user.role.update',
+				targetType: 'user',
+				targetId: req.params.userId,
+				metadata: { role },
+			});
 
 			res.json({ message: 'User role updated successfully' });
 		} catch (error) {
@@ -213,7 +252,7 @@ router.post('/users', authenticateToken, requireAdmin, async (req, res) => {
 				.json({ message: 'Username and email are required' });
 		}
 
-		if (!['user', 'manager', 'admin'].includes(normalizedRole)) {
+		if (!['user', 'manager', 'admin', 'guest'].includes(normalizedRole)) {
 			return res.status(400).json({ message: 'Invalid role' });
 		}
 
@@ -261,6 +300,13 @@ router.post('/users', authenticateToken, requireAdmin, async (req, res) => {
 		if (newUser) {
 			delete newUser.password;
 		}
+		logAuditEvent({
+			actorId: req.user.id,
+			action: 'user.create',
+			targetType: 'user',
+			targetId: userId,
+			metadata: { role: normalizedRole, email },
+		});
 
 		res.status(201).json({ user: newUser, tempPassword });
 	} catch (error) {
@@ -355,6 +401,12 @@ router.post(
 			}
 
 			await issueAdminPasswordReset(targetUser, req.user.id);
+			logAuditEvent({
+				actorId: req.user.id,
+				action: 'user.password.reset',
+				targetType: 'user',
+				targetId: targetUser.id,
+			});
 
 			return res.json({ message: 'Temporary password sent' });
 		} catch (error) {
@@ -381,6 +433,12 @@ router.post(
 				'UPDATE users SET twoFactorEnabled = 0, twoFactorSecret = NULL, pendingTwoFactorSecret = NULL WHERE id = ?',
 			).run(targetUser.id);
 			db.prepare('DELETE FROM two_factor_backup_codes WHERE userId = ?').run(targetUser.id);
+			logAuditEvent({
+				actorId: req.user.id,
+				action: 'user.2fa.disable',
+				targetType: 'user',
+				targetId: targetUser.id,
+			});
 
 			return res.json({ message: 'Two-factor authentication disabled for user' });
 		} catch (error) {
@@ -436,6 +494,13 @@ router.post(
 			}
 
 			await issueAdminPasswordReset(targetUser, req.user.id);
+			logAuditEvent({
+				actorId: req.user.id,
+				action: 'password-reset.resolve',
+				targetType: 'user',
+				targetId: targetUser.id,
+				metadata: { requestId: String(request.id) },
+			});
 			return res.json({ message: 'Temporary password sent' });
 		} catch (error) {
 			console.error('Resolve password reset request error:', error);
@@ -458,6 +523,13 @@ router.delete('/users/:userId', authenticateToken, requireAdmin, (req, res) => {
 		}
 
 		db.prepare('DELETE FROM users WHERE id = ?').run(req.params.userId);
+		logAuditEvent({
+			actorId: req.user.id,
+			action: 'user.delete',
+			targetType: 'user',
+			targetId: req.params.userId,
+			metadata: { username: user.username },
+		});
 		return res.json({ message: 'User deleted' });
 	} catch (error) {
 		console.error('Delete user error:', error);
@@ -489,6 +561,15 @@ router.get('/reports', authenticateToken, requireAdmin, (req, res) => {
 	}
 });
 
+router.get('/audit-log', authenticateToken, requireAdmin, (req, res) => {
+	try {
+		res.json(listAuditEvents(Number(req.query?.limit) || 250));
+	} catch (error) {
+		console.error('Error fetching audit log:', error);
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
 router.post('/reports/:reportId/review', authenticateToken, requireAdmin, (req, res) => {
 	try {
 		const result = db
@@ -502,6 +583,12 @@ router.post('/reports/:reportId/review', authenticateToken, requireAdmin, (req, 
 		if (result.changes === 0) {
 			return res.status(404).json({ message: 'Report not found or already actioned' });
 		}
+		logAuditEvent({
+			actorId: req.user.id,
+			action: 'report.review',
+			targetType: 'report',
+			targetId: req.params.reportId,
+		});
 		res.json({ message: 'Report marked as reviewed' });
 	} catch (error) {
 		console.error('Error reviewing report:', error);
@@ -522,6 +609,12 @@ router.post('/reports/:reportId/dismiss', authenticateToken, requireAdmin, (req,
 		if (result.changes === 0) {
 			return res.status(404).json({ message: 'Report not found or already actioned' });
 		}
+		logAuditEvent({
+			actorId: req.user.id,
+			action: 'report.dismiss',
+			targetType: 'report',
+			targetId: req.params.reportId,
+		});
 		res.json({ message: 'Report dismissed' });
 	} catch (error) {
 		console.error('Error dismissing report:', error);

@@ -9,6 +9,9 @@ const normalizeAvatar = (avatar) =>
 		? avatar
 		: DEFAULT_AVATAR;
 
+const normalizeStoredRole = (role, isGuest) =>
+	isGuest ? 'guest' : role || 'user';
+
 const clearExpiredStatusIfNeeded = (user) => {
 	if (!user?.statusClearsAt) {
 		return user;
@@ -57,6 +60,7 @@ const normalizeUserRecord = (user) => {
 	return {
 		...withFreshDnd,
 		avatar: normalizeAvatar(withFreshDnd.avatar),
+		role: normalizeStoredRole(withFreshDnd.role, withFreshDnd.isGuest),
 	};
 };
 
@@ -70,12 +74,14 @@ export const createUser = (
 	e2eeIv = null,
 	role = null,
 ) => {
+	const isGuest = role === 'guest' ? 1 : 0;
+	const storedRole = role === 'guest' ? 'user' : role;
 	const insertWithRole = role !== null && role !== undefined;
 	const stmt = db.prepare(
 		insertWithRole
 			? `
-        INSERT INTO users (username, email, password, avatar, e2eePublicKey, e2eeEncryptedPrivateKey, e2eeSalt, e2eeIv, role)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO users (username, email, password, avatar, e2eePublicKey, e2eeEncryptedPrivateKey, e2eeSalt, e2eeIv, role, isGuest)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
 			: `
         INSERT INTO users (username, email, password, avatar, e2eePublicKey, e2eeEncryptedPrivateKey, e2eeSalt, e2eeIv)
@@ -92,7 +98,8 @@ export const createUser = (
 				e2eeEncryptedPrivateKey,
 				e2eeSalt,
 				e2eeIv,
-				role,
+				storedRole,
+				isGuest,
 			)
 		: stmt.run(
 				username,
@@ -208,6 +215,15 @@ export const updateUser = (id, updates) => {
 		fields.push('mustChangePassword = ?');
 		values.push(updates.mustChangePassword ? 1 : 0);
 	}
+	if (updates.role !== undefined) {
+		fields.push('role = ?');
+		values.push(updates.role === 'guest' ? 'user' : updates.role);
+		fields.push('isGuest = ?');
+		values.push(updates.role === 'guest' ? 1 : 0);
+	} else if (updates.isGuest !== undefined) {
+		fields.push('isGuest = ?');
+		values.push(updates.isGuest ? 1 : 0);
+	}
 
 	if (fields.length === 0) return null;
 
@@ -271,7 +287,8 @@ export const anonymizeUser = (id) => {
       twoFactorSecret = NULL,
       pendingTwoFactorSecret = NULL,
       failedLoginAttempts = 0,
-      lockedUntil = NULL
+      lockedUntil = NULL,
+      isGuest = 0
     WHERE id = ?`,
 	).run(`deleted-user-${id}`, `deleted-user-${id}@deleted.invalid`, passwordHash, DEFAULT_AVATAR, id);
 };

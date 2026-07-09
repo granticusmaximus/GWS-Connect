@@ -10,6 +10,7 @@ import dotenv from 'dotenv';
 import db from './database.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
+import searchRoutes from './routes/search.js';
 import channelRoutes from './routes/channels.js';
 import groupChatRoutes from './routes/groupChats.js';
 import messageRoutes from './routes/messages.js';
@@ -17,13 +18,20 @@ import adminRoutes from './routes/admin.js';
 import managerRoutes from './routes/manager.js';
 import friendRoutes from './routes/friends.js';
 import notificationRoutes from './routes/notifications.js';
+import notificationPreferenceRoutes from './routes/notificationPrefs.js';
 import pollRoutes from './routes/polls.js';
 import gifRoutes from './routes/gifs.js';
 import inviteRoutes from './routes/invites.js';
+import linkPreviewRoutes from './routes/linkPreviews.js';
+import sidebarRoutes from './routes/sidebar.js';
+import webhookRoutes from './routes/webhooks.js';
+import workspaceEmojiRoutes from './routes/workspaceEmoji.js';
+import voiceChannelRoutes from './routes/voiceChannels.js';
 import { authenticateSocket } from './middleware/auth.js';
 import { canSendMessage, getUserRole } from './middleware/roles.js';
 import { canAccessChannel } from './models/Channel.js';
 import { canAccessGroupChat, findGroupChatsForUser } from './models/GroupChat.js';
+import { findVoiceChannelById } from './models/VoiceChannel.js';
 import {
 	getMessageThreadRecordById,
 	getReplyContextByMessageId,
@@ -36,6 +44,7 @@ import {
 } from './services/inAppNotifications.js';
 import { broadcastPresenceState } from './services/presence.js';
 import { sendErrorNotification } from './services/errorReporter.js';
+import { startScheduledMessageDispatcher } from './services/scheduledDispatcher.js';
 import { logSocketError, errorLoggingMiddleware } from './utils/logger.js';
 
 dotenv.config();
@@ -168,6 +177,7 @@ app.use('/api/auth/2fa/challenge', authRateLimiter);
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/search', searchRoutes);
 app.use('/api/channels', channelRoutes);
 app.use('/api/group-chats', groupChatRoutes);
 app.use('/api/messages', messageRoutes);
@@ -175,9 +185,15 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/manager', managerRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/notification-prefs', notificationPreferenceRoutes);
 app.use('/api/polls', pollRoutes);
 app.use('/api/gifs', gifRoutes);
 app.use('/api/invites', inviteRoutes);
+app.use('/api/link-previews', linkPreviewRoutes);
+app.use('/api/sidebar', sidebarRoutes);
+app.use('/api/webhooks', webhookRoutes);
+app.use('/api/workspace-emoji', workspaceEmojiRoutes);
+app.use('/api/voice-channels', voiceChannelRoutes);
 
 const desktopClientDist = process.env.DESKTOP_CLIENT_DIST;
 if (desktopClientDist && existsSync(desktopClientDist)) {
@@ -196,6 +212,7 @@ if (desktopClientDist && existsSync(desktopClientDist)) {
 
 // Error handling middleware (must be after all routes)
 app.use(errorLoggingMiddleware);
+startScheduledMessageDispatcher(io);
 
 // Socket.io connection handling
 const onlineUsers = new Map();
@@ -209,6 +226,7 @@ app.set('userPresence', userPresence);
 // group chat calls, or `dm:<sortedUserIdA>-<sortedUserIdB>` for DM calls.
 // participants: Map<userId, { username, withVideo }>
 const callSessions = new Map();
+app.set('callSessions', callSessions);
 
 const buildDmCallId = (userIdA, userIdB) =>
 	`dm:${[String(userIdA), String(userIdB)].sort().join('-')}`;
@@ -216,6 +234,7 @@ const buildDmCallId = (userIdA, userIdB) =>
 const resolveCallId = ({ chatType, chatId, currentUserId }) => {
 	if (chatType === 'channel') return `channel:${chatId}`;
 	if (chatType === 'group') return `group:${chatId}`;
+	if (chatType === 'voice') return `voice:${chatId}`;
 	return buildDmCallId(currentUserId, chatId);
 };
 
@@ -234,6 +253,41 @@ const serializeParticipants = (session) =>
 		username: info.username,
 		withVideo: info.withVideo,
 	}));
+
+const emitVoiceChannelPresence = (voiceChannelId) => {
+	const voiceChannel = findVoiceChannelById(voiceChannelId);
+	if (!voiceChannel) {
+		return;
+	}
+
+	const session = callSessions.get(`voice:${voiceChannelId}`);
+	const participants = session
+		? Array.from(session.participants.entries()).map(([userId, participant]) => {
+				const user = findUserById(userId);
+				return {
+					userId: String(userId),
+					username: participant.username,
+					avatar: user?.avatar || null,
+				};
+			})
+		: [];
+
+	for (const [onlineUserId] of onlineUsers.entries()) {
+		const access = canAccessChannel(
+			voiceChannel.channelId,
+			onlineUserId,
+			getUserRole(onlineUserId),
+		);
+		if (!access.allowed) {
+			continue;
+		}
+
+		io.to(String(onlineUserId)).emit('voice-channel-presence', {
+			voiceChannelId: String(voiceChannelId),
+			participants,
+		});
+	}
+};
 
 const buildTypingPayload = ({ socket, channelId = null, groupChatId = null, chatId = null }) => {
 	const user = findUserById(socket.user.id);
@@ -721,12 +775,19 @@ io.on('connection', async (socket) => {
 					members
 						.filter((member) => String(member.id) !== String(socket.user.id))
 						.map((member) =>
-							sendPushToUser(member.id, {
-								title: 'GWS Connect',
-								body: 'You have a new message',
-								icon: '/gws-connect-favicon.svg',
-								url: '/dashboard',
-							}),
+							sendPushToUser(
+								member.id,
+								{
+									title: 'GWS Connect',
+									body: 'You have a new message',
+									icon: '/gws-connect-favicon.svg',
+									url: '/dashboard',
+								},
+								{
+									targetType: 'group',
+									targetId: groupChatId,
+								},
+							),
 						),
 				);
 			} else if (channelId) {
@@ -747,7 +808,12 @@ io.on('connection', async (socket) => {
 				await Promise.all(
 					members
 						.filter((member) => String(member.id) !== String(socket.user.id))
-						.map((member) => sendPushToUser(member.id, payload)),
+						.map((member) =>
+							sendPushToUser(member.id, payload, {
+								targetType: 'channel',
+								targetId: channelId,
+							}),
+						),
 				);
 
 				// Send mention notifications
@@ -771,7 +837,11 @@ io.on('connection', async (socket) => {
 
 					await Promise.all(
 						mentionedUserIds.map((userId) =>
-							sendPushToUser(userId, mentionPayload),
+							sendPushToUser(userId, mentionPayload, {
+								targetType: 'channel',
+								targetId: channelId,
+								isMention: true,
+							}),
 						),
 					);
 				}
@@ -780,12 +850,19 @@ io.on('connection', async (socket) => {
 				io.to(recipientId).emit('message', message);
 				socket.emit('message', message);
 
-				await sendPushToUser(recipientId, {
-					title: 'GWS Connect',
-					body: 'You have a new message',
-					icon: '/gws-connect-favicon.svg',
-					url: '/dashboard',
-				});
+				await sendPushToUser(
+					recipientId,
+					{
+						title: 'GWS Connect',
+						body: 'You have a new message',
+						icon: '/gws-connect-favicon.svg',
+						url: '/dashboard',
+					},
+					{
+						targetType: 'dm',
+						targetId: socket.user.id,
+					},
+				);
 			}
 
 			if (
@@ -1620,7 +1697,12 @@ io.on('connection', async (socket) => {
 		const { chatType, chatId, withVideo = false } = data || {};
 
 		try {
-			if (chatType !== 'channel' && chatType !== 'dm' && chatType !== 'group') {
+			if (
+				chatType !== 'channel' &&
+				chatType !== 'dm' &&
+				chatType !== 'group' &&
+				chatType !== 'voice'
+			) {
 				callback?.({ ok: false, message: 'Invalid chat type' });
 				return;
 			}
@@ -1635,6 +1717,20 @@ io.on('connection', async (socket) => {
 
 			if (chatType === 'group') {
 				const access = resolveGroupChatAccess(chatId, socket.user.id);
+				if (!access.allowed) {
+					callback?.({ ok: false, message: access.reason });
+					return;
+				}
+			}
+
+			if (chatType === 'voice') {
+				const voiceChannel = findVoiceChannelById(chatId);
+				if (!voiceChannel) {
+					callback?.({ ok: false, message: 'Voice channel not found' });
+					return;
+				}
+
+				const access = resolveChannelAccess(voiceChannel.channelId, socket.user.id);
 				if (!access.allowed) {
 					callback?.({ ok: false, message: access.reason });
 					return;
@@ -1669,6 +1765,10 @@ io.on('connection', async (socket) => {
 					fromUsername: socket.user.username,
 					withVideo: Boolean(withVideo),
 				});
+			}
+
+			if (chatType === 'voice') {
+				emitVoiceChannelPresence(chatId);
 			}
 
 			callback?.({ ok: true, callId, participants: existingParticipants });
@@ -1712,6 +1812,10 @@ io.on('connection', async (socket) => {
 		if (session.participants.size === 0) {
 			callSessions.delete(callId);
 		}
+
+		if (session.chatType === 'voice') {
+			emitVoiceChannelPresence(session.chatId);
+		}
 	});
 
 	socket.on('call:decline', (data) => {
@@ -1753,6 +1857,10 @@ io.on('connection', async (socket) => {
 
 			if (session.participants.size === 0) {
 				callSessions.delete(callId);
+			}
+
+			if (session.chatType === 'voice') {
+				emitVoiceChannelPresence(session.chatId);
 			}
 		}
 	});

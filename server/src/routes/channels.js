@@ -37,6 +37,12 @@ router.post('/', authenticateToken, async (req, res) => {
 		const userRole = getUserRole(req.user.id);
 		const privacyValue = isPrivate ? 1 : 0;
 
+		if (userRole === 'guest') {
+			return res.status(403).json({
+				message: 'Guest accounts cannot create channels',
+			});
+		}
+
 		// All channels are E2EE, regardless of public/private visibility - the
 		// creator wraps the channel key for themselves immediately; later
 		// members receive it from an online member when they join (see
@@ -94,6 +100,12 @@ router.post('/:channelId/join', authenticateToken, async (req, res) => {
 		}
 		if (!access.allowed) {
 			return res.status(403).json({ message: access.reason });
+		}
+
+		if (getUserRole(req.user.id) === 'guest') {
+			return res.status(403).json({
+				message: 'Guest accounts cannot join channels unless assigned by a manager or admin',
+			});
 		}
 
 		addChannelMember(req.params.channelId, req.user.id);

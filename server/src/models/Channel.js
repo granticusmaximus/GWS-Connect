@@ -335,6 +335,20 @@ export const canAccessChannel = (channelId, userId, role = 'user') => {
 	const isMember = isChannelMember(channelId, userId);
 	const isBanned = isChannelBanned(channelId, userId);
 
+	if (role === 'guest') {
+		if (isBanned) {
+			return { allowed: false, reason: 'Channel access denied', channel };
+		}
+		if (!isMember && !isCreator && !isAssignedManager) {
+			return {
+				allowed: false,
+				reason: 'Guest access is limited to assigned channels',
+				channel,
+			};
+		}
+		return { allowed: true, channel };
+	}
+
 	if (isBanned && !isCreator && !isAssignedManager) {
 		return { allowed: false, reason: 'Channel access denied', channel };
 	}
@@ -374,6 +388,21 @@ export const findVisibleChannelsForUser = (userId, role) => {
       ORDER BY c.createdAt DESC
     `);
 		channels = stmt.all(userId, userId, userId, userId);
+		return attachChannelReadState(channels, userId);
+	}
+
+	if (role === 'guest') {
+		const stmt = db.prepare(`
+      SELECT c.*, u.username as creatorUsername, u.avatar as creatorAvatar
+      FROM channels c
+      JOIN users u ON c.createdBy = u.id
+      JOIN channel_members cm ON cm.channelId = c.id AND cm.userId = ?
+      LEFT JOIN channel_bans cb ON cb.channelId = c.id AND cb.userId = ?
+      WHERE c.status = 'approved'
+        AND cb.userId IS NULL
+      ORDER BY c.createdAt DESC
+    `);
+		channels = stmt.all(userId, userId);
 		return attachChannelReadState(channels, userId);
 	}
 

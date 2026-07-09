@@ -1,5 +1,6 @@
 import webpush from 'web-push';
 import db from '../database.js';
+import { getNotificationPreference } from '../models/NotificationPreference.js';
 
 const publicKey = process.env.VAPID_PUBLIC_KEY || '';
 const privateKey = process.env.VAPID_PRIVATE_KEY || '';
@@ -32,9 +33,30 @@ const isDndActive = (userId) => {
 	return true;
 };
 
-export const sendPushToUser = async (userId, payload) => {
+const shouldSuppressForPreference = (
+	userId,
+	{ targetType = null, targetId = null, isMention = false } = {},
+) => {
+	if (!targetType || targetId === null || targetId === undefined) {
+		return false;
+	}
+
+	const preference = getNotificationPreference(userId, targetType, targetId)?.preference;
+	if (!preference || preference === 'all') {
+		return false;
+	}
+
+	if (preference === 'mentions') {
+		return !isMention;
+	}
+
+	return true;
+};
+
+export const sendPushToUser = async (userId, payload, options = {}) => {
 	if (!publicKey || !privateKey) return;
 	if (isDndActive(userId)) return;
+	if (shouldSuppressForPreference(userId, options)) return;
 
 	const stmt = db.prepare(
 		'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE userId = ?',

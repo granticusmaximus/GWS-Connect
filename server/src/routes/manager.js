@@ -159,9 +159,10 @@ router.post(
 				return res.status(404).json({ message: 'Channel not found' });
 			}
 
-			if (!channel.isPrivate) {
+			if (!channel.isPrivate && targetUser.role !== 'guest') {
 				return res.status(400).json({
-					message: 'Members can only be added directly to private channels',
+					message:
+						'Members can only be added directly to private channels unless the account is a guest',
 				});
 			}
 

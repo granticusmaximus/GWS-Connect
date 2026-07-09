@@ -7,6 +7,7 @@ import { useCallStore } from '../store/callStore'
 import { usePreferencesStore } from '../store/preferencesStore'
 import { API_URL } from '../config/runtime'
 import { formatDate, formatTime } from '../utils/dateFormat'
+import { extractFirstUrl } from '../utils/links'
 import { parseMentions, type MessageMention } from '../utils/mentions'
 import { renderMarkdown, renderMarkdownInline } from '../utils/renderMarkdown'
 import { getReplyPreviewText, getThreadKey } from '../utils/replies'
@@ -17,10 +18,14 @@ import ChannelModal from './ChannelModal'
 import InviteModal from './InviteModal'
 import PollCard from './PollCard'
 import ChatFilesPanel from './ChatFilesPanel'
+import BookmarksPanel from './BookmarksPanel'
 import DocumentPreview from './DocumentPreview'
+import LinkPreview from './LinkPreview'
 import MessageAttachment from './MessageAttachment'
 import ReportMessageModal from './ReportMessageModal'
+import ThreadPanel from './ThreadPanel'
 import {
+  BellIcon,
   ClockIcon,
   ExclamationTriangleIcon,
   FaceFrownIcon,
@@ -239,12 +244,17 @@ export default function ChatWindow() {
     setGroupChatDisappearing,
     messageFocusTarget,
     latestMessageRequest,
+    setMessageFocusTarget,
     clearMessageFocusTarget,
     clearLatestMessageRequest,
+    setActiveChannel,
+    setActiveDM,
+    setActiveGroupChat,
     loadChannels,
     loadChannelMessages,
     loadDirectMessages,
     loadGroupChatMessages,
+    loadMessageById,
     leaveGroupChat,
     loadChannelFiles,
     loadDirectFiles,
@@ -255,7 +265,10 @@ export default function ChatWindow() {
     deleteMessage,
     archiveMessage,
     togglePinMessage,
+    toggleBookmarkMessage,
     loadPinnedMessages,
+    loadBookmarkedMessages,
+    loadThreadMessages,
     markConversationVisited,
   } = useChatStore()
   const { activeCallId, isConnecting, startCall } = useCallStore()
@@ -268,11 +281,16 @@ export default function ChatWindow() {
   const [showEditModal, setShowEditModal] = useState(false)
   const [showInviteModal, setShowInviteModal] = useState(false)
   const [showDisappearingMenu, setShowDisappearingMenu] = useState(false)
-  const [activeTab, setActiveTab] = useState<'messages' | 'files' | 'members' | 'pinned'>('messages')
+  const [activeTab, setActiveTab] = useState<'messages' | 'files' | 'members' | 'pinned' | 'bookmarks'>('messages')
   const [pinnedMessages, setPinnedMessages] = useState<ChatMessage[]>([])
+  const [bookmarkedMessages, setBookmarkedMessages] = useState<ChatMessage[]>([])
+  const [bookmarksLoading, setBookmarksLoading] = useState(false)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [pendingName, setPendingName] = useState('')
   const [pendingMessage, setPendingMessage] = useState('')
+  const [notificationPreference, setNotificationPreference] = useState<'all' | 'mentions' | 'none'>('all')
+  const [notificationMenuOpen, setNotificationMenuOpen] = useState(false)
+  const [notificationSaving, setNotificationSaving] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [openReactionMessageId, setOpenReactionMessageId] = useState<string | null>(null)
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null)
@@ -281,6 +299,9 @@ export default function ChatWindow() {
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const [editContent, setEditContent] = useState('')
   const [hoverProfileCard, setHoverProfileCard] = useState<HoverProfileCard | null>(null)
+  const [threadRootMessageId, setThreadRootMessageId] = useState<string | null>(null)
+  const [threadMessages, setThreadMessages] = useState<ChatMessage[]>([])
+  const [threadLoading, setThreadLoading] = useState(false)
   const [channelMembers, setChannelMembers] = useState<ChannelMember[]>([])
   const [membersLoading, setMembersLoading] = useState(false)
   const [membersError, setMembersError] = useState('')
@@ -314,6 +335,61 @@ export default function ChatWindow() {
     () => (replyTargetId ? currentMessagesById.get(replyTargetId) || null : null),
     [replyTargetId, currentMessagesById],
   )
+  const replyCountByRootMessageId = useMemo(() => {
+    const counts = new Map<string, number>()
+    currentMessages.forEach((message) => {
+      if (!message.replyToMessageId || !message.threadRootMessageId) {
+        return
+      }
+
+      counts.set(
+        message.threadRootMessageId,
+        (counts.get(message.threadRootMessageId) || 0) + 1,
+      )
+    })
+    return counts
+  }, [currentMessages])
+  const threadConversationMessages = useMemo(
+    () =>
+      threadRootMessageId
+        ? currentMessages.filter(
+            (message) =>
+              message.id === threadRootMessageId ||
+              message.threadRootMessageId === threadRootMessageId,
+          )
+        : [],
+    [currentMessages, threadRootMessageId],
+  )
+  const openThreadMessages = useMemo(() => {
+    if (!threadRootMessageId) {
+      return []
+    }
+
+    const byId = new Map<string, ChatMessage>()
+    threadMessages.forEach((message) => {
+      byId.set(message.id, message)
+    })
+    threadConversationMessages.forEach((message) => {
+      byId.set(message.id, {
+        ...byId.get(message.id),
+        ...message,
+      })
+    })
+
+    return Array.from(byId.values()).sort(
+      (left, right) =>
+        new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
+    )
+  }, [threadConversationMessages, threadMessages, threadRootMessageId])
+  const threadRootMessage = useMemo(
+    () =>
+      threadRootMessageId
+        ? openThreadMessages.find((message) => message.id === threadRootMessageId) ||
+          currentMessagesById.get(threadRootMessageId) ||
+          null
+        : null,
+    [currentMessagesById, openThreadMessages, threadRootMessageId],
+  )
 
   const currentChannel = useMemo(() => 
     channels.find(ch => ch.id === activeChannel),
@@ -331,6 +407,18 @@ export default function ChatWindow() {
     () => groupChats.find((group) => group.id === activeGroupChat) || null,
     [activeGroupChat, groupChats],
   )
+  const currentNotificationTarget = useMemo(() => {
+    if (activeChannel) {
+      return { type: 'channel' as const, id: activeChannel }
+    }
+    if (activeGroupChat) {
+      return { type: 'group' as const, id: activeGroupChat }
+    }
+    if (activeDM) {
+      return { type: 'dm' as const, id: activeDM }
+    }
+    return null
+  }, [activeChannel, activeDM, activeGroupChat])
 
   const seenIndicatorText = useMemo(() => {
     if (currentChatType !== 'dm' && currentChatType !== 'group') {
@@ -487,6 +575,64 @@ export default function ChatWindow() {
       void loadPinnedMessages('dm', activeDM).then(setPinnedMessages)
     }
   }, [activeTab, activeChannel, activeGroupChat, activeDM, loadPinnedMessages])
+
+  useEffect(() => {
+    if (activeTab !== 'bookmarks') return
+    let cancelled = false
+
+    setBookmarksLoading(true)
+    void loadBookmarkedMessages()
+      .then((messages) => {
+        if (!cancelled) {
+          setBookmarkedMessages(messages)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setBookmarksLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, loadBookmarkedMessages])
+
+  useEffect(() => {
+    setNotificationMenuOpen(false)
+
+    if (!currentNotificationTarget) {
+      setNotificationPreference('all')
+      return
+    }
+
+    let cancelled = false
+    void axios
+      .get(
+        `${API_URL}/notification-prefs/${currentNotificationTarget.type}/${currentNotificationTarget.id}`,
+        { headers: authHeaders },
+      )
+      .then((response) => {
+        if (!cancelled) {
+          const nextPreference = response.data?.preference
+          setNotificationPreference(
+            nextPreference === 'mentions' || nextPreference === 'none'
+              ? nextPreference
+              : 'all',
+          )
+        }
+      })
+      .catch((error) => {
+        console.error('Error loading notification preference:', error)
+        if (!cancelled) {
+          setNotificationPreference('all')
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [authHeaders, currentNotificationTarget])
 
   useEffect(() => {
     if (!socket) return
@@ -664,8 +810,20 @@ export default function ChatWindow() {
   useEffect(() => {
     setReplyTargetId(null)
     setHighlightedMessageId(null)
+    setThreadRootMessageId(null)
+    setThreadMessages([])
     clearHighlightTimer()
   }, [currentChatId, clearHighlightTimer])
+
+  useEffect(() => {
+    if (activeTab === 'messages') {
+      return
+    }
+
+    setThreadRootMessageId(null)
+    setThreadMessages([])
+    setThreadLoading(false)
+  }, [activeTab])
 
   useEffect(() => {
     if (!currentChatId || activeTab !== 'messages') return
@@ -877,6 +1035,130 @@ export default function ChatWindow() {
     requestAnimationFrame(() => scrollToBottom('smooth'))
   }, [scrollToBottom])
 
+  const handleOpenThread = useCallback(async (messageId: string) => {
+    setThreadLoading(true)
+    const response = await loadThreadMessages(messageId)
+
+    if (response) {
+      setThreadRootMessageId(response.threadRootMessageId)
+      setThreadMessages(response.messages)
+      setActiveTab('messages')
+    }
+
+    setThreadLoading(false)
+  }, [loadThreadMessages])
+
+  const handleToggleBookmark = useCallback(async (message: ChatMessage) => {
+    const ok = await toggleBookmarkMessage(message.id)
+    if (!ok) {
+      return
+    }
+
+    setBookmarkedMessages((current) => {
+      if (message.isBookmarked) {
+        return current.filter((entry) => entry.id !== message.id)
+      }
+
+      const nextMessage = { ...message, isBookmarked: true }
+      return [nextMessage, ...current.filter((entry) => entry.id !== message.id)]
+    })
+  }, [toggleBookmarkMessage])
+
+  const resolveBookmarkedMessageTarget = useCallback((message: ChatMessage) => {
+    if (message.channelId) {
+      return { chatType: 'channel' as const, chatId: message.channelId }
+    }
+
+    if (message.groupChatId) {
+      return { chatType: 'group' as const, chatId: message.groupChatId }
+    }
+
+    const currentUserId = String(user?.id || '')
+    const peerId =
+      String(message.senderId) === currentUserId
+        ? message.recipientId
+        : message.senderId
+
+    return peerId
+      ? { chatType: 'dm' as const, chatId: String(peerId) }
+      : null
+  }, [user?.id])
+
+  const handleOpenBookmarkedMessage = useCallback(async (message: ChatMessage) => {
+    const target = resolveBookmarkedMessageTarget(message)
+    if (!target) {
+      return
+    }
+
+    setActiveTab('messages')
+    setThreadRootMessageId(null)
+    setThreadMessages([])
+    setMessageFocusTarget({
+      chatType: target.chatType,
+      chatId: target.chatId,
+      messageId: message.id,
+    })
+
+    if (target.chatType === 'channel') {
+      setActiveChannel(target.chatId)
+    } else if (target.chatType === 'group') {
+      setActiveGroupChat(target.chatId)
+    } else {
+      setActiveDM(target.chatId)
+    }
+
+    await loadMessageById(message.id)
+  }, [
+    loadMessageById,
+    resolveBookmarkedMessageTarget,
+    setActiveChannel,
+    setActiveDM,
+    setActiveGroupChat,
+    setMessageFocusTarget,
+  ])
+
+  const saveNotificationPreference = useCallback(async (preference: 'all' | 'mentions' | 'none') => {
+    if (!currentNotificationTarget) {
+      return
+    }
+
+    setNotificationSaving(true)
+
+    try {
+      await axios.put(
+        `${API_URL}/notification-prefs/${currentNotificationTarget.type}/${currentNotificationTarget.id}`,
+        { preference },
+        { headers: authHeaders },
+      )
+      setNotificationPreference(preference)
+      setNotificationMenuOpen(false)
+    } catch (error) {
+      console.error('Error saving notification preference:', error)
+    } finally {
+      setNotificationSaving(false)
+    }
+  }, [authHeaders, currentNotificationTarget])
+
+  const resolveBookmarkContextLabel = useCallback((message: ChatMessage) => {
+    if (message.channelId) {
+      const channel = channels.find((entry) => entry.id === String(message.channelId))
+      return channel ? `#${channel.name}` : `Channel #${message.channelId}`
+    }
+
+    if (message.groupChatId) {
+      const group = groupChats.find((entry) => entry.id === String(message.groupChatId))
+      return group ? group.name : 'Group Chat'
+    }
+
+    const target = resolveBookmarkedMessageTarget(message)
+    if (!target || target.chatType !== 'dm') {
+      return 'Direct Message'
+    }
+
+    const conversation = directMessages.find((entry) => entry.userId === target.chatId)
+    return conversation ? `DM with ${conversation.username}` : 'Direct Message'
+  }, [channels, directMessages, groupChats, resolveBookmarkedMessageTarget])
+
   const handleViewProfile = useCallback(() => {
     if (!hoverProfileCard) return
     setHoverProfileCard(null)
@@ -1021,9 +1303,12 @@ export default function ChatWindow() {
             const nextThreadKey = getThreadKey(currentMessages[index + 1]?.threadRootMessageId)
             const threadContinuesFromPrev = Boolean(threadKey && previousThreadKey === threadKey)
             const threadContinuesToNext = Boolean(threadKey && nextThreadKey === threadKey)
+            const replyCount = replyCountByRootMessageId.get(message.id) || 0
+            const threadTargetId = message.threadRootMessageId || message.id
 
             const shouldShowBubble =
               isDeleted || isEditing || isPoll || hasContent || hasFile || Boolean(replyReference)
+            const previewUrl = hasContent && !isDeleted ? extractFirstUrl(message.content) : null
 
             return (
               <div
@@ -1214,6 +1499,7 @@ export default function ChatWindow() {
                                 Edited
                               </div>
                             )}
+                            {previewUrl && <LinkPreview url={previewUrl} />}
                           </Fragment>
                         )}
                       </div>
@@ -1265,6 +1551,16 @@ export default function ChatWindow() {
                       {hoveredMessageId === message.id && !isDeleted && !isEditing && (
                         <button
                           type="button"
+                          onClick={() => void handleOpenThread(threadTargetId)}
+                          className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-600 transition hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                        >
+                          Thread
+                        </button>
+                      )}
+
+                      {hoveredMessageId === message.id && !isDeleted && !isEditing && (
+                        <button
+                          type="button"
                           onClick={() => void togglePinMessage(message.id)}
                           className={`rounded-full border px-3 py-1 text-xs transition ${
                             message.isPinned
@@ -1273,6 +1569,20 @@ export default function ChatWindow() {
                           }`}
                         >
                           {message.isPinned ? 'Unpin' : 'Pin'}
+                        </button>
+                      )}
+
+                      {hoveredMessageId === message.id && !isOwn && !isDeleted && !isEditing && (
+                        <button
+                          type="button"
+                          onClick={() => void handleToggleBookmark(message)}
+                          className={`rounded-full border px-3 py-1 text-xs transition ${
+                            message.isBookmarked
+                              ? 'border-primary-400 bg-primary-50 text-primary-700 dark:border-primary-500 dark:bg-primary-900/30 dark:text-primary-200'
+                              : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800'
+                          }`}
+                        >
+                          {message.isBookmarked ? 'Saved' : 'Save'}
                         </button>
                       )}
 
@@ -1330,6 +1640,16 @@ export default function ChatWindow() {
                         </div>
                       )}
                     </div>
+
+                    {!message.replyToMessageId && replyCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenThread(message.id)}
+                        className="mt-2 text-xs font-medium text-primary-600 transition hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+                      >
+                        {replyCount} repl{replyCount === 1 ? 'y' : 'ies'} in thread
+                      </button>
+                    )}
                   </div>
                   {isOwn && threadKey && (
                     <div className="relative flex w-4 flex-shrink-0 justify-center">
@@ -1581,6 +1901,27 @@ export default function ChatWindow() {
     </div>
   )
 
+  const renderConversationBookmarksPanel = () => {
+    if (bookmarksLoading) {
+      return (
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="text-center text-sm text-gray-500 dark:text-gray-400 py-8">
+            Loading saved messages...
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <BookmarksPanel
+        messages={bookmarkedMessages}
+        onOpenMessage={handleOpenBookmarkedMessage}
+        onRemoveBookmark={(message) => void handleToggleBookmark(message)}
+        resolveContextLabel={resolveBookmarkContextLabel}
+      />
+    )
+  }
+
   const renderConversationBody = (layout: 'default' | 'sidebar' = 'default') =>
     activeTab === 'messages'
       ? renderConversationMessagesPanel(layout)
@@ -1588,7 +1929,9 @@ export default function ChatWindow() {
         ? renderConversationFilesPanel(layout)
         : activeTab === 'pinned'
           ? renderConversationPinnedPanel()
-          : renderConversationMembersPanel(layout)
+          : activeTab === 'bookmarks'
+            ? renderConversationBookmarksPanel()
+            : renderConversationMembersPanel(layout)
 
   if (!currentChatId) {
     return (
@@ -1790,6 +2133,44 @@ export default function ChatWindow() {
                   )}
                 </div>
               )}
+              {currentNotificationTarget && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setNotificationMenuOpen((current) => !current)}
+                    className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-700"
+                    title="Notification preference"
+                  >
+                    <BellIcon className="w-4 h-4" />
+                    <span className="hidden sm:inline">
+                      Notify: {notificationPreference === 'mentions' ? 'Mentions' : notificationPreference === 'none' ? 'Off' : 'All'}
+                    </span>
+                  </button>
+                  {notificationMenuOpen && (
+                    <div className="absolute right-0 top-full z-30 mt-2 w-52 rounded-lg border border-gray-200 bg-white p-2 shadow-lg dark:border-gray-700 dark:bg-gray-800">
+                      {[
+                        { id: 'all', label: 'All messages' },
+                        { id: 'mentions', label: 'Mentions only' },
+                        { id: 'none', label: 'Mute conversation' },
+                      ].map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => void saveNotificationPreference(option.id as 'all' | 'mentions' | 'none')}
+                          disabled={notificationSaving}
+                          className={`w-full rounded-md px-3 py-2 text-left text-sm transition ${
+                            notificationPreference === option.id
+                              ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-200'
+                              : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700'
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => void startCall(currentChatType, currentChatId, false)}
@@ -1872,6 +2253,16 @@ export default function ChatWindow() {
           >
             Pinned
           </button>
+          <button
+            onClick={() => setActiveTab('bookmarks')}
+            className={`px-3 py-1.5 rounded-full text-sm ${
+              activeTab === 'bookmarks'
+                ? 'bg-primary-600 text-white'
+                : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200'
+            }`}
+          >
+            Saved
+          </button>
           {activeChannel && (
             <button
               onClick={() => setActiveTab('members')}
@@ -1911,6 +2302,43 @@ export default function ChatWindow() {
           )
         )}
       </>
+
+      <ThreadPanel
+        isOpen={Boolean(threadRootMessageId)}
+        loading={threadLoading}
+        threadRootMessageId={threadRootMessageId}
+        messages={openThreadMessages}
+        onClose={() => {
+          setThreadRootMessageId(null)
+          setThreadMessages([])
+          setThreadLoading(false)
+        }}
+        onJumpToMessage={(messageId) => {
+          jumpToMessage(messageId)
+          if (messageId !== threadRootMessageId) {
+            setActiveTab('messages')
+          }
+        }}
+        footer={
+          threadRootMessage && !isAnnouncementChannel ? (
+            <MessageInput
+              channelId={activeChannel || undefined}
+              recipientId={activeDM || undefined}
+              groupChatId={activeGroupChat || undefined}
+              onSelectFile={(file) => {
+                setPendingFile(file)
+                setPendingName(file.name)
+                setPendingMessage('')
+              }}
+              replyTarget={threadRootMessage}
+              onCancelReply={() => {
+                setThreadRootMessageId(null)
+                setThreadMessages([])
+              }}
+            />
+          ) : undefined
+        }
+      />
 
       {hoverProfileCard && (
         <div
@@ -2014,6 +2442,7 @@ export default function ChatWindow() {
             isPrivate: !!currentChannel.isPrivate,
             slowModeSeconds: currentChannel.slowModeSeconds,
             disappearingMessagesSeconds: currentChannel.disappearingMessagesSeconds,
+            announcementOnly: !!currentChannel.announcementOnly,
           }}
           mode="edit"
         />

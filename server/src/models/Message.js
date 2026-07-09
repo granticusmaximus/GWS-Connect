@@ -18,8 +18,8 @@ const messageThreadSelect = `
       m.isDeleted,
       m.isArchived,
       m.createdAt,
-      u.username as senderUsername,
-      u.avatar as senderAvatar,
+      COALESCE(m.senderNameOverride, u.username) as senderUsername,
+      COALESCE(m.senderAvatarOverride, u.avatar) as senderAvatar,
       p.question as pollQuestion
     FROM messages m
     JOIN users u ON m.senderId = u.id
@@ -63,10 +63,12 @@ export const createMessage = (
 	expiresAt = null,
 	fileIv = null,
 	keyGeneration = null,
+	senderNameOverride = null,
+	senderAvatarOverride = null,
 ) => {
 	const stmt = db.prepare(`
-    INSERT INTO messages (content, senderId, channelId, recipientId, groupChatId, replyToMessageId, threadRootMessageId, fileUrl, fileName, fileType, filePath, cipherText, cipherIv, isEncrypted, expiresAt, fileIv, keyGeneration)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (content, senderId, channelId, recipientId, groupChatId, replyToMessageId, threadRootMessageId, fileUrl, fileName, fileType, filePath, cipherText, cipherIv, isEncrypted, expiresAt, fileIv, keyGeneration, senderNameOverride, senderAvatarOverride)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 	const result = stmt.run(
 		content,
@@ -86,6 +88,8 @@ export const createMessage = (
 		expiresAt,
 		fileIv,
 		keyGeneration,
+		senderNameOverride,
+		senderAvatarOverride,
 	);
 	return result.lastInsertRowid;
 };
@@ -94,7 +98,7 @@ export const getGroupChatMessages = (groupChatId, limit = 100) => {
 	const stmt = db.prepare(`
     SELECT *
     FROM (
-      SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+      SELECT m.*, COALESCE(m.senderNameOverride, u.username) as senderUsername, COALESCE(m.senderAvatarOverride, u.avatar) as senderAvatar
       FROM messages m
       JOIN users u ON m.senderId = u.id
       WHERE m.groupChatId = ? AND m.isArchived = 0
@@ -110,7 +114,7 @@ export const getChannelMessages = (channelId, limit = 100) => {
 	const stmt = db.prepare(`
     SELECT *
     FROM (
-      SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+      SELECT m.*, COALESCE(m.senderNameOverride, u.username) as senderUsername, COALESCE(m.senderAvatarOverride, u.avatar) as senderAvatar
       FROM messages m
       JOIN users u ON m.senderId = u.id
       WHERE m.channelId = ? AND m.isArchived = 0
@@ -126,7 +130,7 @@ export const getDirectMessages = (userId1, userId2, limit = 100) => {
 	const stmt = db.prepare(`
     SELECT *
     FROM (
-      SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+      SELECT m.*, COALESCE(m.senderNameOverride, u.username) as senderUsername, COALESCE(m.senderAvatarOverride, u.avatar) as senderAvatar
       FROM messages m
       JOIN users u ON m.senderId = u.id
       WHERE (
@@ -358,6 +362,17 @@ export const getMessageThreadRecordById = (messageId) => {
 	return stmt.get(messageId);
 };
 
+export const getThreadMessages = (threadRootMessageId) => {
+	const normalizedRootId = Number(threadRootMessageId);
+	return db
+		.prepare(
+			`${messageThreadSelect}
+       WHERE m.id = ? OR m.threadRootMessageId = ?
+       ORDER BY datetime(m.createdAt) ASC, m.id ASC`,
+		)
+		.all(normalizedRootId, normalizedRootId);
+};
+
 export const getMessageThreadRecordsByIds = (messageIds) => {
 	if (!Array.isArray(messageIds) || messageIds.length === 0) {
 		return [];
@@ -483,6 +498,54 @@ export const getReplyContextsByMessageIds = (messageIds) =>
 		return accumulator;
 	}, new Map());
 
+export const getBookmarkedMessageIds = (userId, messageIds) => {
+	if (!Array.isArray(messageIds) || messageIds.length === 0) {
+		return new Set();
+	}
+
+	const placeholders = messageIds.map(() => '?').join(', ');
+	const rows = db
+		.prepare(
+			`SELECT messageId
+       FROM user_bookmarks
+       WHERE userId = ? AND messageId IN (${placeholders})`,
+		)
+		.all(userId, ...messageIds);
+
+	return new Set(rows.map((row) => String(row.messageId)));
+};
+
+export const toggleMessageBookmark = (messageId, userId) => {
+	const existing = db
+		.prepare(
+			'SELECT 1 FROM user_bookmarks WHERE userId = ? AND messageId = ?',
+		)
+		.get(userId, messageId);
+
+	if (existing) {
+		db.prepare(
+			'DELETE FROM user_bookmarks WHERE userId = ? AND messageId = ?',
+		).run(userId, messageId);
+		return { isBookmarked: false };
+	}
+
+	db.prepare(
+		`INSERT INTO user_bookmarks (userId, messageId, createdAt)
+     VALUES (?, ?, CURRENT_TIMESTAMP)`,
+	).run(userId, messageId);
+	return { isBookmarked: true };
+};
+
+export const getBookmarkedMessages = (userId) =>
+	db
+		.prepare(
+			`${messageThreadSelect}
+       JOIN user_bookmarks b ON b.messageId = m.id
+       WHERE b.userId = ? AND m.isArchived = 0
+       ORDER BY datetime(b.createdAt) DESC, m.id DESC`,
+		)
+		.all(userId);
+
 export const markMessageDeleted = (messageId) => {
 	const stmt = db.prepare(
 		`UPDATE messages
@@ -538,7 +601,7 @@ export const getPinnedMessages = (channelId, recipientId, currentUserId, groupCh
 	if (channelId) {
 		return db
 			.prepare(
-				`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+				`SELECT m.*, COALESCE(m.senderNameOverride, u.username) as senderUsername, COALESCE(m.senderAvatarOverride, u.avatar) as senderAvatar
 		 FROM messages m
 		 JOIN users u ON m.senderId = u.id
 		 WHERE m.channelId = ? AND m.isPinned = 1 AND m.isDeleted = 0
@@ -550,7 +613,7 @@ export const getPinnedMessages = (channelId, recipientId, currentUserId, groupCh
 	if (groupChatId) {
 		return db
 			.prepare(
-				`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+				`SELECT m.*, COALESCE(m.senderNameOverride, u.username) as senderUsername, COALESCE(m.senderAvatarOverride, u.avatar) as senderAvatar
 		 FROM messages m
 		 JOIN users u ON m.senderId = u.id
 		 WHERE m.groupChatId = ? AND m.isPinned = 1 AND m.isDeleted = 0
@@ -561,7 +624,7 @@ export const getPinnedMessages = (channelId, recipientId, currentUserId, groupCh
 
 	return db
 		.prepare(
-			`SELECT m.*, u.username as senderUsername, u.avatar as senderAvatar
+			`SELECT m.*, COALESCE(m.senderNameOverride, u.username) as senderUsername, COALESCE(m.senderAvatarOverride, u.avatar) as senderAvatar
 	 FROM messages m
 	 JOIN users u ON m.senderId = u.id
 	 WHERE m.recipientId IS NOT NULL
@@ -575,7 +638,7 @@ export const getPinnedMessages = (channelId, recipientId, currentUserId, groupCh
 export const getChannelFiles = (channelId, limit = 200) => {
 	const stmt = db.prepare(
 		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.fileIv, m.cipherIv, m.isEncrypted, m.keyGeneration, m.createdAt,
-            u.username as senderUsername, u.avatar as senderAvatar
+            COALESCE(m.senderNameOverride, u.username) as senderUsername, COALESCE(m.senderAvatarOverride, u.avatar) as senderAvatar
      FROM messages m
      JOIN users u ON m.senderId = u.id
      WHERE m.channelId = ? AND m.fileUrl IS NOT NULL
@@ -588,7 +651,7 @@ export const getChannelFiles = (channelId, limit = 200) => {
 export const getDirectFiles = (userId1, userId2, limit = 200) => {
 	const stmt = db.prepare(
 		`SELECT m.id, m.fileUrl, m.fileName, m.fileType, m.fileIv, m.cipherIv, m.isEncrypted, m.keyGeneration, m.createdAt,
-            u.username as senderUsername, u.avatar as senderAvatar
+            COALESCE(m.senderNameOverride, u.username) as senderUsername, COALESCE(m.senderAvatarOverride, u.avatar) as senderAvatar
      FROM messages m
      JOIN users u ON m.senderId = u.id
      WHERE ((m.senderId = ? AND m.recipientId = ?) OR (m.senderId = ? AND m.recipientId = ?))

@@ -1,6 +1,7 @@
 import { PaperClipIcon } from '@heroicons/react/24/outline'
 import { useDecryptedAttachment } from '../hooks/useDecryptedAttachment'
 import type { Message } from '../store/chatStore'
+import AudioMessagePlayer from './AudioMessagePlayer'
 
 interface MessageAttachmentProps {
   message: Message
@@ -53,6 +54,10 @@ export default function MessageAttachment({ message, mediaWidthClassName, onOpen
         <video src={url} className={`${mediaWidthClassName} rounded-lg`} controls />
       </button>
     )
+  }
+
+  if (type.startsWith('audio/')) {
+    return <AudioMessagePlayer url={url} name={name || 'Voice message'} />
   }
 
   return (

@@ -17,6 +17,7 @@ import {
 	rotateGroupChatKey,
 	setGroupChatDisappearingSeconds,
 } from '../models/GroupChat.js';
+import { getUserRole } from '../middleware/roles.js';
 import { getGroupChatVisits } from '../models/Message.js';
 
 const router = express.Router();
@@ -34,6 +35,12 @@ router.get('/', authenticateToken, async (req, res) => {
 // Create a group chat
 router.post('/', authenticateToken, async (req, res) => {
 	try {
+		if (getUserRole(req.user.id) === 'guest') {
+			return res.status(403).json({
+				message: 'Guest accounts cannot create group chats',
+			});
+		}
+
 		const { name, memberIds, keys } = req.body;
 		const trimmedName = String(name || '').trim();
 

@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import axios from 'axios'
 import { useChatStore } from '../store/chatStore'
-import { CheckCircleIcon, HashtagIcon, PlusIcon, UserCircleIcon, UserGroupIcon, XMarkIcon } from '@heroicons/react/24/outline'
+import { API_URL } from '../config/runtime'
+import { CheckCircleIcon, HashtagIcon, PencilSquareIcon, PlusIcon, TrashIcon, UserCircleIcon, UserGroupIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import { formatStatusForDisplay } from '../utils/userStatus'
 import UserSearchModal from './UserSearchModal'
 import ChannelModal from './ChannelModal'
@@ -10,6 +12,52 @@ interface SidebarProps {
   isMobileOpen?: boolean
   onClose?: () => void
   onChatSelect?: () => void
+}
+
+interface SidebarSection {
+  id: string
+  name: string
+  channelIds: string[]
+}
+
+const normalizeSidebarSection = (section: Partial<SidebarSection> & { id?: string | number }): SidebarSection => ({
+  id: String(section.id || `temp-${Date.now()}`),
+  name: String(section.name || 'Section'),
+  channelIds: Array.isArray(section.channelIds) ? section.channelIds.map(String) : [],
+})
+
+const removeChannelFromSections = (sections: SidebarSection[], channelId: string) =>
+  sections.map((section) => ({
+    ...section,
+    channelIds: section.channelIds.filter((id) => id !== channelId),
+  }))
+
+const insertChannelIntoSection = (
+  sections: SidebarSection[],
+  channelId: string,
+  sectionId: string | null,
+  targetIndex?: number,
+) => {
+  const withoutChannel = removeChannelFromSections(sections, channelId)
+
+  if (!sectionId) {
+    return withoutChannel
+  }
+
+  return withoutChannel.map((section) => {
+    if (section.id !== sectionId) {
+      return section
+    }
+
+    const nextChannelIds = [...section.channelIds]
+    const insertionIndex =
+      typeof targetIndex === 'number'
+        ? Math.max(0, Math.min(targetIndex, nextChannelIds.length))
+        : nextChannelIds.length
+
+    nextChannelIds.splice(insertionIndex, 0, channelId)
+    return { ...section, channelIds: nextChannelIds }
+  })
 }
 
 export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }: SidebarProps) {
@@ -33,9 +81,54 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
   const [showUserSearch, setShowUserSearch] = useState(false)
   const [showChannelModal, setShowChannelModal] = useState(false)
   const [showGroupChatModal, setShowGroupChatModal] = useState(false)
+  const [sidebarSections, setSidebarSections] = useState<SidebarSection[]>([])
+  const [sidebarLoading, setSidebarLoading] = useState(false)
+  const [sidebarSaving, setSidebarSaving] = useState(false)
+  const [draggingChannelId, setDraggingChannelId] = useState<string | null>(null)
+
+  const loadSidebarSections = async () => {
+    setSidebarLoading(true)
+    try {
+      const response = await axios.get(`${API_URL}/sidebar/sections`)
+      setSidebarSections(
+        Array.isArray(response.data)
+          ? response.data.map((section: SidebarSection) => normalizeSidebarSection(section))
+          : [],
+      )
+    } catch (error) {
+      console.error('Error loading sidebar sections:', error)
+      setSidebarSections([])
+    } finally {
+      setSidebarLoading(false)
+    }
+  }
+
+  const persistSidebarSections = async (sections: SidebarSection[]) => {
+    setSidebarSections(sections)
+    setSidebarSaving(true)
+    try {
+      const response = await axios.put(`${API_URL}/sidebar/sections`, {
+        sections: sections.map((section) => ({
+          name: section.name,
+          channelIds: section.channelIds,
+        })),
+      })
+      setSidebarSections(
+        Array.isArray(response.data)
+          ? response.data.map((section: SidebarSection) => normalizeSidebarSection(section))
+          : sections,
+      )
+    } catch (error) {
+      console.error('Error saving sidebar sections:', error)
+      void loadSidebarSections()
+    } finally {
+      setSidebarSaving(false)
+    }
+  }
 
   useEffect(() => {
     void loadGroupChats()
+    void loadSidebarSections()
   }, [loadGroupChats])
 
   const handleChannelSelect = (channelId: string) => {
@@ -63,6 +156,109 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
     directMessages.reduce((sum, dm) => sum + (dm.unreadCount ?? 0), 0) +
     groupChats.reduce((sum, g) => sum + (g.unreadCount ?? 0), 0)
 
+  const channelsById = useMemo(
+    () =>
+      channels.reduce<Record<string, (typeof channels)[number]>>((accumulator, channel) => {
+        accumulator[channel.id] = channel
+        return accumulator
+      }, {}),
+    [channels],
+  )
+
+  const assignedChannelIds = useMemo(
+    () => new Set(sidebarSections.flatMap((section) => section.channelIds)),
+    [sidebarSections],
+  )
+
+  const uncategorizedChannels = useMemo(
+    () => channels.filter((channel) => !assignedChannelIds.has(channel.id)),
+    [assignedChannelIds, channels],
+  )
+
+  const handleCreateSection = async () => {
+    const name = window.prompt('Section name')
+    if (!name || !name.trim()) {
+      return
+    }
+
+    await persistSidebarSections([
+      ...sidebarSections,
+      {
+        id: `temp-${Date.now()}`,
+        name: name.trim(),
+        channelIds: [],
+      },
+    ])
+  }
+
+  const handleRenameSection = async (section: SidebarSection) => {
+    const nextName = window.prompt('Rename section', section.name)
+    if (!nextName || !nextName.trim()) {
+      return
+    }
+
+    await persistSidebarSections(
+      sidebarSections.map((entry) =>
+        entry.id === section.id ? { ...entry, name: nextName.trim() } : entry,
+      ),
+    )
+  }
+
+  const handleRemoveSection = async (sectionId: string) => {
+    await persistSidebarSections(
+      sidebarSections.filter((section) => section.id !== sectionId),
+    )
+  }
+
+  const handleDropChannel = async (
+    destinationSectionId: string | null,
+    targetIndex?: number,
+  ) => {
+    if (!draggingChannelId) {
+      return
+    }
+
+    const nextSections = insertChannelIntoSection(
+      sidebarSections,
+      draggingChannelId,
+      destinationSectionId,
+      targetIndex,
+    )
+    setDraggingChannelId(null)
+    await persistSidebarSections(nextSections)
+  }
+
+  const renderChannelButton = (
+    channel: (typeof channels)[number],
+    options: { sectionId?: string | null; dropIndex?: number } = {},
+  ) => (
+    <button
+      key={`${options.sectionId || 'root'}-${channel.id}`}
+      draggable
+      onDragStart={() => setDraggingChannelId(channel.id)}
+      onDragEnd={() => setDraggingChannelId(null)}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault()
+        void handleDropChannel(options.sectionId ?? null, options.dropIndex)
+      }}
+      onClick={() => handleChannelSelect(channel.id)}
+      className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+        activeChannel === channel.id
+          ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
+          : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
+      }`}
+    >
+      <HashtagIcon className="w-5 h-5 flex-shrink-0" />
+      <span className="text-sm font-medium truncate flex-1 text-left">{channel.name}</span>
+      {channel.unreadCount > 0 && (
+        <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-primary-600 px-1.5 py-0.5 text-[11px] font-semibold leading-none text-white">
+          {formatUnreadCount(channel.unreadCount)}
+        </span>
+      )}
+    </button>
+  )
+
   return (
     <div
       className={`fixed inset-y-0 left-0 z-40 w-full max-w-80 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col transform transition-[transform,width] duration-300 ${
@@ -71,62 +267,123 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
         isMobileOpen ? 'lg:w-64 xl:w-72 lg:border-r' : 'lg:w-0 lg:border-r-0'
       }`}
     >
-      {/* Channels Section */}
       <div className="p-4 border-b border-gray-200 dark:border-gray-700">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase">
             Channels
           </h2>
-          {onClose && (
+          <div className="flex items-center gap-1">
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 lg:hidden"
+                aria-label="Close sidebar"
+              >
+                <XMarkIcon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+              </button>
+            )}
+            {totalUnread > 0 && (
+              <button
+                onClick={() => void markAllConversationsRead()}
+                className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                title="Mark all as read"
+                aria-label="Mark all conversations as read"
+              >
+                <CheckCircleIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
+              </button>
+            )}
             <button
-              onClick={onClose}
-              className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 lg:hidden"
-              aria-label="Close sidebar"
-            >
-              <XMarkIcon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-            </button>
-          )}
-          {totalUnread > 0 && (
-            <button
-              onClick={() => void markAllConversationsRead()}
+              onClick={() => void handleCreateSection()}
               className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-              title="Mark all as read"
-              aria-label="Mark all conversations as read"
+              aria-label="Add sidebar section"
+              title="Add section"
             >
-              <CheckCircleIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
+              <PencilSquareIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
-          )}
-          <button
-            onClick={() => setShowChannelModal(true)}
-            className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-            aria-label="Add channel"
-          >
-            <PlusIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-          </button>
-        </div>
-        <div className="space-y-1">
-          {channels.map((channel) => (
             <button
-              key={channel.id}
-              onClick={() => handleChannelSelect(channel.id)}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
-                activeChannel === channel.id
-                  ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
-                  : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
-              }`}
+              onClick={() => setShowChannelModal(true)}
+              className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+              aria-label="Add channel"
             >
-              <HashtagIcon className="w-5 h-5 flex-shrink-0" />
-              <span className="text-sm font-medium truncate flex-1 text-left">{channel.name}</span>
-              {channel.unreadCount > 0 && (
-                <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-primary-600 px-1.5 py-0.5 text-[11px] font-semibold leading-none text-white">
-                  {formatUnreadCount(channel.unreadCount)}
-                </span>
-              )}
+              <PlusIcon className="w-4 h-4 text-gray-600 dark:text-gray-400" />
             </button>
-          ))}
-          
-          {/* Default channels if none exist */}
-          {channels.length === 0 && (
+          </div>
+        </div>
+
+        {sidebarSaving && (
+          <div className="mb-2 text-[11px] font-medium text-primary-600 dark:text-primary-400">
+            Saving layout...
+          </div>
+        )}
+
+        <div
+          className="space-y-1"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => {
+            event.preventDefault()
+            void handleDropChannel(null)
+          }}
+        >
+          {uncategorizedChannels.map((channel) => renderChannelButton(channel))}
+
+          {sidebarSections.map((section) => {
+            const sectionChannels = section.channelIds
+              .map((channelId) => channelsById[channelId])
+              .filter(Boolean)
+
+            return (
+              <div
+                key={section.id}
+                className="mt-3 rounded-xl border border-gray-200 bg-gray-50/80 p-2 dark:border-gray-700 dark:bg-gray-900/40"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  void handleDropChannel(section.id)
+                }}
+              >
+                <div className="mb-2 flex items-center justify-between gap-2 px-2">
+                  <div className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                    {section.name}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => void handleRenameSection(section)}
+                      className="rounded p-1 text-gray-500 transition hover:bg-white hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                      aria-label={`Rename ${section.name}`}
+                    >
+                      <PencilSquareIcon className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleRemoveSection(section.id)}
+                      className="rounded p-1 text-gray-500 transition hover:bg-white hover:text-red-600 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-red-400"
+                      aria-label={`Remove ${section.name}`}
+                    >
+                      <TrashIcon className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  {sectionChannels.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                      Drop channels here
+                    </div>
+                  ) : (
+                    sectionChannels.map((channel, index) =>
+                      renderChannelButton(channel, {
+                        sectionId: section.id,
+                        dropIndex: index,
+                      }),
+                    )
+                  )}
+                </div>
+              </div>
+            )
+          })}
+
+          {!sidebarLoading && channels.length === 0 && (
             <>
               <button
                 onClick={() => handleChannelSelect('general')}
@@ -155,7 +412,6 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
         </div>
       </div>
 
-      {/* Group Chats Section */}
       <div className="p-4 border-b border-gray-200 dark:border-gray-700">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase">
@@ -198,7 +454,6 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
         </div>
       </div>
 
-      {/* Direct Messages Section */}
       <div className="flex-1 p-4 overflow-y-auto">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase">
@@ -274,22 +529,22 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
         </div>
       </div>
 
-      {/* User Search Modal */}
       <UserSearchModal 
         isOpen={showUserSearch} 
         onClose={() => setShowUserSearch(false)}
         onUserSelected={onChatSelect}
       />
 
-      {/* Channel Modal */}
       <ChannelModal
         isOpen={showChannelModal}
         onClose={() => setShowChannelModal(false)}
-        onSuccess={() => loadChannels()}
+        onSuccess={() => {
+          void loadChannels()
+          void loadSidebarSections()
+        }}
         mode="create"
       />
 
-      {/* Group Chat Modal */}
       <GroupChatModal
         isOpen={showGroupChatModal}
         onClose={() => setShowGroupChatModal(false)}

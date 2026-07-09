@@ -9,13 +9,18 @@ import {
 import axios from 'axios'
 import { API_URL } from '../config/runtime'
 import { useChatStore, type Message as ChatMessage, type TypingUser } from '../store/chatStore'
+import { useAuthStore } from '../store/authStore'
 import { getReplyPreviewText } from '../utils/replies'
-import { PaperAirplaneIcon, PaperClipIcon, PlusIcon, ChartBarIcon, PhotoIcon, XMarkIcon } from '@heroicons/react/24/outline'
+import { PaperAirplaneIcon, PaperClipIcon, PlusIcon, ChartBarIcon, ClockIcon, PhotoIcon, MicrophoneIcon, StopCircleIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import PollCreateModal from './PollCreateModal'
 import GifPickerModal from './GifPickerModal'
+import ScheduleMessagePicker from './ScheduleMessagePicker'
+import { searchCommands, type SlashCommandId } from '../utils/commandRegistry'
 import { searchEmoji, type EmojiEntry } from '../utils/emojiData'
+
 const TYPING_STOP_DELAY_MS = 1800
 const TYPING_KEEPALIVE_INTERVAL_MS = 1500
+const AUDIO_MIME_TYPE_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
 
 interface MessageInputProps {
   channelId?: string
@@ -134,6 +139,7 @@ export default function MessageInput({
   const [showActions, setShowActions] = useState(false)
   const [showPollModal, setShowPollModal] = useState(false)
   const [showGifModal, setShowGifModal] = useState(false)
+  const [showSchedulePicker, setShowSchedulePicker] = useState(false)
   const [gifQuery, setGifQuery] = useState('')
   const [pollInitialQuestion, setPollInitialQuestion] = useState('')
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0)
@@ -145,12 +151,19 @@ export default function MessageInput({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const messageInputRef = useRef<HTMLInputElement | null>(null)
   const typingStopTimeoutRef = useRef<number | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const recordingChunksRef = useRef<Blob[]>([])
+  const recordingStreamRef = useRef<MediaStream | null>(null)
+  const recordingTimerRef = useRef<number | null>(null)
   const typingStateRef = useRef({
     active: false,
     lastEmittedAt: 0,
   })
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
   const {
     sendMessage,
+    scheduleMessage,
     createPoll,
     sendGif,
     emitTypingStart,
@@ -169,43 +182,107 @@ export default function MessageInput({
     () => (typingConversationKey ? typingUsersByChatId[typingConversationKey] || [] : []),
     [typingConversationKey, typingUsersByChatId],
   )
+  const currentUser = useAuthStore((state) => state.user)
 
+  const clearRecordingTimer = useCallback(() => {
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current)
+      recordingTimerRef.current = null
+    }
+  }, [])
+
+  const cleanupRecordingStream = useCallback(() => {
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop())
+    recordingStreamRef.current = null
+  }, [])
+
+  const stopRecording = useCallback(async (discard = false) => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder) {
+      return
+    }
+
+    await new Promise<void>((resolve) => {
+      recorder.onstop = () => {
+        const chunks = [...recordingChunksRef.current]
+        const mimeType = recorder.mimeType || 'audio/webm'
+        const extension = mimeType.includes('mp4') ? 'm4a' : 'webm'
+
+        clearRecordingTimer()
+        cleanupRecordingStream()
+        mediaRecorderRef.current = null
+        recordingChunksRef.current = []
+        setIsRecording(false)
+        setRecordingSeconds(0)
+
+        if (!discard && chunks.length > 0 && onSelectFile) {
+          onSelectFile(
+            new File(chunks, `voice-note-${Date.now()}.${extension}`, { type: mimeType }),
+          )
+        }
+
+        resolve()
+      }
+
+      recorder.stop()
+    })
+  }, [cleanupRecordingStream, clearRecordingTimer, onSelectFile])
+
+  const toggleRecording = useCallback(async () => {
+    if (isRecording) {
+      await stopRecording(false)
+      setShowActions(false)
+      return
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      alert('Voice recording is not supported in this browser.')
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      recordingStreamRef.current = stream
+
+      const mimeType = AUDIO_MIME_TYPE_CANDIDATES.find((candidate) =>
+        MediaRecorder.isTypeSupported(candidate),
+      )
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream)
+
+      recordingChunksRef.current = []
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordingChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.start()
+      mediaRecorderRef.current = recorder
+      setIsRecording(true)
+      setRecordingSeconds(0)
+      clearRecordingTimer()
+      recordingTimerRef.current = window.setInterval(() => {
+        setRecordingSeconds((current) => current + 1)
+      }, 1000)
+      setShowActions(false)
+    } catch (error) {
+      console.error('Voice note recording failed:', error)
+      cleanupRecordingStream()
+      alert('Unable to access your microphone.')
+    }
+  }, [cleanupRecordingStream, clearRecordingTimer, isRecording, stopRecording])
+
+  const commandQuery = useMemo(() => {
+    if (!message.startsWith('/')) {
+      return ''
+    }
+    return message.slice(1).trimStart().split(/\s+/)[0]?.toLowerCase() || ''
+  }, [message])
+
+  const commandItems = useMemo(() => searchCommands(commandQuery), [commandQuery])
   const showCommandMenu = message.startsWith('/')
-
-  const commandItems = useMemo(
-    () => [
-      {
-        id: 'attach',
-        label: 'Attach File',
-        description: 'Upload a file',
-        icon: PaperClipIcon,
-        action: () => {
-          fileInputRef.current?.click()
-        },
-      },
-      {
-        id: 'gif',
-        label: 'GIF',
-        description: 'Search and send a GIF',
-        icon: PhotoIcon,
-        action: () => {
-          setGifQuery('')
-          setShowGifModal(true)
-        },
-      },
-      {
-        id: 'poll',
-        label: 'Create Poll',
-        description: 'Start a new poll',
-        icon: ChartBarIcon,
-        action: () => {
-          setPollInitialQuestion('')
-          setShowPollModal(true)
-        },
-      },
-    ],
-    []
-  )
 
   useEffect(() => {
     if (showCommandMenu) {
@@ -277,6 +354,11 @@ export default function MessageInput({
   useEffect(() => () => {
     stopTyping()
   }, [stopTyping])
+
+  useEffect(() => () => {
+    clearRecordingTimer()
+    cleanupRecordingStream()
+  }, [clearRecordingTimer, cleanupRecordingStream])
 
   const mentionCandidates = useMemo(() => {
     if (!channelId || !mentionContext) return []
@@ -366,7 +448,7 @@ export default function MessageInput({
   }
 
   const handleSendMessage = async () => {
-    if (!message.trim()) return
+    if (isRecording || !message.trim()) return
 
     stopTyping()
 
@@ -385,6 +467,40 @@ export default function MessageInput({
       setShowGifModal(true)
       setMessage('')
       setMentionContext(null)
+      return
+    }
+
+    if (/^\/schedule(\s|$)/.test(message.trim())) {
+      setShowSchedulePicker(true)
+      return
+    }
+
+    if (/^\/shrug(\s|$)/.test(message.trim())) {
+      const suffix = message.trim().replace(/^\/shrug\s*/, '')
+      const shrugMessage = suffix ? `¯\\_(ツ)_/¯ ${suffix}` : '¯\\_(ツ)_/¯'
+      const sent = await sendMessage(shrugMessage, channelId, recipientId, undefined, replyTarget?.id, groupChatId)
+      if (sent) {
+        setMessage('')
+        setMentionContext(null)
+        setEmojiContext(null)
+        onCancelReply?.()
+      }
+      return
+    }
+
+    if (/^\/me(\s|$)/.test(message.trim())) {
+      const actionText = message.trim().replace(/^\/me\s*/, '')
+      if (!actionText) {
+        return
+      }
+      const emoteMessage = `*${currentUser?.username || 'Someone'} ${actionText}*`
+      const sent = await sendMessage(emoteMessage, channelId, recipientId, undefined, replyTarget?.id, groupChatId)
+      if (sent) {
+        setMessage('')
+        setMentionContext(null)
+        setEmojiContext(null)
+        onCancelReply?.()
+      }
       return
     }
 
@@ -492,30 +608,70 @@ export default function MessageInput({
     }
 
     if (showCommandMenu) {
-      if (e.key === 'ArrowDown') {
+      if (e.key === 'ArrowDown' && commandItems.length > 0) {
         e.preventDefault()
         setSelectedCommandIndex((prev) => (prev + 1) % commandItems.length)
         return
       }
 
-      if (e.key === 'ArrowUp') {
+      if (e.key === 'ArrowUp' && commandItems.length > 0) {
         e.preventDefault()
         setSelectedCommandIndex((prev) => (prev - 1 + commandItems.length) % commandItems.length)
         return
       }
 
-      if (e.key === 'Enter') {
-        e.preventDefault()
-        commandItems[selectedCommandIndex]?.action()
-        setMessage('')
-        stopTyping()
-        return
+      if (e.key === 'Enter' && commandItems.length > 0) {
+        const selectedCommandId = commandItems[selectedCommandIndex]?.id
+        const hasCommandArguments = message.trim().split(/\s+/).length > 1
+        const shouldDeferToSend =
+          hasCommandArguments &&
+          ['gif', 'poll', 'schedule', 'me', 'shrug'].includes(
+            String(selectedCommandId || ''),
+          )
+
+        if (!shouldDeferToSend) {
+          e.preventDefault()
+          handleCommandAction(selectedCommandId)
+          setMessage('')
+          stopTyping()
+          return
+        }
       }
     }
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void handleSendMessage()
+    }
+  }
+
+  const handleCommandAction = (commandId?: SlashCommandId) => {
+    switch (commandId) {
+      case 'attach':
+        fileInputRef.current?.click()
+        break
+      case 'gif':
+        setGifQuery('')
+        setShowGifModal(true)
+        break
+      case 'poll':
+        setPollInitialQuestion('')
+        setShowPollModal(true)
+        break
+      case 'voice':
+        void toggleRecording()
+        break
+      case 'schedule':
+        setShowSchedulePicker(true)
+        break
+      case 'shrug':
+        setMessage('/shrug ')
+        break
+      case 'me':
+        setMessage('/me ')
+        break
+      default:
+        break
     }
   }
 
@@ -541,6 +697,31 @@ export default function MessageInput({
           >
             <XMarkIcon className="h-4 w-4" />
           </button>
+        </div>
+      )}
+
+      {isRecording && (
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/40 dark:bg-red-900/20">
+          <div className="flex items-center gap-2 text-sm font-medium text-red-700 dark:text-red-300">
+            <span className="inline-flex h-2.5 w-2.5 rounded-full bg-red-500 animate-pulse" />
+            Recording voice note ({recordingSeconds}s)
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void stopRecording(true)}
+              className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/30"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void stopRecording(false)}
+              className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700"
+            >
+              Finish
+            </button>
+          </div>
         </div>
       )}
 
@@ -595,9 +776,46 @@ export default function MessageInput({
                 <ChartBarIcon className="w-4 h-4" />
                 Create Poll
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void toggleRecording()
+                }}
+                className="w-full px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center gap-2"
+              >
+                <MicrophoneIcon className="w-4 h-4" />
+                Voice Note
+              </button>
             </div>
           )}
         </div>
+
+        <button
+          type="button"
+          onClick={() => void toggleRecording()}
+          className={`p-2 rounded-lg transition-colors ${
+            isRecording
+              ? 'bg-red-100 text-red-600 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50'
+              : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+          }`}
+          aria-label={isRecording ? 'Stop recording voice note' : 'Record voice note'}
+        >
+          {isRecording ? (
+            <StopCircleIcon className="w-5 h-5" />
+          ) : (
+            <MicrophoneIcon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowSchedulePicker(true)}
+          disabled={!message.trim() || isRecording}
+          className="p-2 rounded-lg transition-colors hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-gray-700"
+          aria-label="Schedule message"
+        >
+          <ClockIcon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+        </button>
 
         <div className="relative flex-1">
           <input
@@ -679,8 +897,7 @@ export default function MessageInput({
                     key={item.id}
                     type="button"
                     onClick={() => {
-                      item.action()
-                      setMessage('')
+                      handleCommandAction(item.id)
                     }}
                     onMouseEnter={() => setSelectedCommandIndex(index)}
                     className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 transition-colors ${
@@ -703,7 +920,7 @@ export default function MessageInput({
         
         <button
           onClick={handleSendMessage}
-          disabled={!message.trim()}
+          disabled={!message.trim() || isRecording}
           className="p-2 bg-primary-600 hover:bg-primary-700 disabled:bg-gray-300 dark:disabled:bg-gray-600 rounded-lg transition-colors disabled:cursor-not-allowed"
           aria-label="Send message"
         >
@@ -734,6 +951,21 @@ export default function MessageInput({
           if (ok) {
             setShowGifModal(false)
             setGifQuery('')
+            onCancelReply?.()
+          }
+        }}
+      />
+
+      <ScheduleMessagePicker
+        isOpen={showSchedulePicker}
+        onClose={() => setShowSchedulePicker(false)}
+        onConfirm={async (deliverAt) => {
+          const ok = await scheduleMessage(message, deliverAt, channelId, recipientId, replyTarget?.id, groupChatId)
+          if (ok) {
+            setShowSchedulePicker(false)
+            setMessage('')
+            setMentionContext(null)
+            setEmojiContext(null)
             onCancelReply?.()
           }
         }}

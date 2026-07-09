@@ -153,9 +153,12 @@ const checkSlowMode = (channelId, userId) => {
 
 // Check user role
 export const getUserRole = (userId) => {
-	const stmt = db.prepare('SELECT role FROM users WHERE id = ?');
+	const stmt = db.prepare('SELECT role, isGuest FROM users WHERE id = ?');
 	const user = stmt.get(userId);
-	return user?.role || 'user';
+	if (!user) {
+		return 'user';
+	}
+	return user.isGuest ? 'guest' : user.role || 'user';
 };
 
 // Check if user is manager of channel

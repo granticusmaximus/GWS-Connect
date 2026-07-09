@@ -8,6 +8,8 @@ import { authenticateToken } from '../middleware/auth.js';
 import {
 	computeExpiresAt,
 	createMessage,
+	getBookmarkedMessageIds,
+	getBookmarkedMessages,
 	getChannelMessages,
 	getConversationTtlSeconds,
 	getDirectConversationSummaries,
@@ -17,6 +19,7 @@ import {
 	getGroupChatMessages,
 	getGroupChatVisits,
 	getMessageFileById,
+	getThreadMessages,
 	getChannelFiles,
 	getDirectFiles,
 	getMessageThreadRecordById,
@@ -26,10 +29,12 @@ import {
 	markDirectConversationVisited,
 	setDirectMessageSettings,
 	syncMessageMentions,
+	toggleMessageBookmark,
 	updateMessageFileInfo,
 } from '../models/Message.js';
 import { getPollByMessageId, getPollSummary } from '../models/Poll.js';
 import { getMessageReactions } from '../models/Reaction.js';
+import { createScheduledMessage } from '../models/ScheduledMessage.js';
 import {
 	canAccessChannel,
 	getChannelMembers,
@@ -166,6 +171,10 @@ const formatMessages = (messages, viewerId) => {
 	const mentionsByMessageId = buildMentionsMap(
 		messages.map((message) => message.id),
 	);
+	const bookmarkedMessageIds = getBookmarkedMessageIds(
+		viewerId,
+		messages.map((message) => message.id),
+	);
 	const replyMessageIds = [
 		...new Set(
 			messages
@@ -199,18 +208,66 @@ const formatMessages = (messages, viewerId) => {
 			fileUrl: msg.fileUrl,
 			fileName: msg.fileName,
 			fileType: msg.fileType,
+			fileIv: msg.fileIv || null,
 			poll: pollSummary,
 			reactions,
 			isPinned: Boolean(msg.isPinned),
 			pinnedAt: msg.pinnedAt,
+			isBookmarked: bookmarkedMessageIds.has(msg.id.toString()),
 			mentions: mentionsByMessageId.get(msg.id.toString()) || [],
 			replyToMessageId: normalizeId(msg.replyToMessageId),
 			threadRootMessageId: normalizeId(msg.threadRootMessageId),
 			replyContext: msg.replyToMessageId
 				? replyContextsById.get(normalizeId(msg.replyToMessageId))
 				: null,
+			expiresAt: msg.expiresAt || null,
+			keyGeneration:
+				msg.keyGeneration === null || msg.keyGeneration === undefined
+					? null
+					: Number(msg.keyGeneration),
 		};
 	});
+};
+
+const canAccessMessageForUser = (message, userId) => {
+	if (!message || message.isArchived) {
+		return { allowed: false, status: 404, message: 'Message not found' };
+	}
+
+	if (message.channelId) {
+		const access = canAccessChannel(
+			message.channelId,
+			userId,
+			getUserRole(userId),
+		);
+		if (!access.channel) {
+			return { allowed: false, status: 404, message: 'Channel not found' };
+		}
+		if (!access.allowed) {
+			return { allowed: false, status: 403, message: access.reason };
+		}
+		return { allowed: true };
+	}
+
+	if (message.groupChatId) {
+		const access = canAccessGroupChat(message.groupChatId, userId);
+		if (!access.groupChat) {
+			return { allowed: false, status: 404, message: 'Group chat not found' };
+		}
+		if (!access.allowed) {
+			return { allowed: false, status: 403, message: access.reason };
+		}
+		return { allowed: true };
+	}
+
+	if (
+		String(message.senderId) !== String(userId) &&
+		String(message.recipientId) !== String(userId)
+	) {
+		return { allowed: false, status: 403, message: 'Access denied' };
+	}
+
+	return { allowed: true };
 };
 
 // Get channel messages
@@ -452,30 +509,98 @@ router.get('/group/:groupChatId/pinned', authenticateToken, async (req, res) => 
 	}
 });
 
+router.get('/bookmarks', authenticateToken, async (req, res) => {
+	try {
+		const messages = getBookmarkedMessages(req.user.id).filter((message) => {
+			const access = canAccessMessageForUser(message, req.user.id);
+			return access.allowed;
+		});
+		res.json(formatMessages(messages, req.user.id));
+	} catch (error) {
+		void sendErrorNotification({
+			error,
+			context: {
+				source: 'http',
+				route: 'GET /api/messages/bookmarks',
+				userId: req.user?.id,
+			},
+		});
+		res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.post('/:messageId/bookmark', authenticateToken, async (req, res) => {
+	try {
+		const message = getMessageThreadRecordById(req.params.messageId);
+		const access = canAccessMessageForUser(message, req.user.id);
+		if (!access.allowed) {
+			return res.status(access.status).json({ message: access.message });
+		}
+
+		if (String(message.senderId) === String(req.user.id)) {
+			return res
+				.status(400)
+				.json({ message: 'You can only bookmark messages from other people' });
+		}
+
+		const result = toggleMessageBookmark(req.params.messageId, req.user.id);
+		return res.json(result);
+	} catch (error) {
+		void sendErrorNotification({
+			error,
+			context: {
+				source: 'http',
+				route: 'POST /api/messages/:messageId/bookmark',
+				userId: req.user?.id,
+				params: req.params,
+			},
+		});
+		return res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.get('/:messageId/replies', authenticateToken, async (req, res) => {
+	try {
+		const message = getMessageThreadRecordById(req.params.messageId);
+		const access = canAccessMessageForUser(message, req.user.id);
+		if (!access.allowed) {
+			return res.status(access.status).json({ message: access.message });
+		}
+
+		const threadRootMessageId = String(
+			message.threadRootMessageId || message.id,
+		);
+		const threadMessages = getThreadMessages(threadRootMessageId).filter(
+			(threadMessage) => {
+				const threadAccess = canAccessMessageForUser(threadMessage, req.user.id);
+				return threadAccess.allowed;
+			},
+		);
+
+		return res.json({
+			threadRootMessageId,
+			messages: formatMessages(threadMessages, req.user.id),
+		});
+	} catch (error) {
+		void sendErrorNotification({
+			error,
+			context: {
+				source: 'http',
+				route: 'GET /api/messages/:messageId/replies',
+				userId: req.user?.id,
+				params: req.params,
+			},
+		});
+		return res.status(500).json({ message: 'Server error' });
+	}
+});
+
 router.get('/:messageId', authenticateToken, async (req, res) => {
 	try {
 		const message = getMessageThreadRecordById(req.params.messageId);
-		if (!message || message.isArchived) {
-			return res.status(404).json({ message: 'Message not found' });
-		}
-
-		if (message.channelId) {
-			const access = canAccessChannel(
-				message.channelId,
-				req.user.id,
-				getUserRole(req.user.id),
-			);
-			if (!access.channel) {
-				return res.status(404).json({ message: 'Channel not found' });
-			}
-			if (!access.allowed) {
-				return res.status(403).json({ message: access.reason });
-			}
-		} else if (
-			String(message.senderId) !== String(req.user.id) &&
-			String(message.recipientId) !== String(req.user.id)
-		) {
-			return res.status(403).json({ message: 'Access denied' });
+		const access = canAccessMessageForUser(message, req.user.id);
+		if (!access.allowed) {
+			return res.status(access.status).json({ message: access.message });
 		}
 
 		const formattedMessage = formatMessages([message], req.user.id)[0];
@@ -621,7 +746,6 @@ router.post('/', authenticateToken, async (req, res) => {
 			io.to(`channel:${channelId}`).emit('message', message);
 
 			const members = getChannelMembers(channelId);
-			const channel = findChannelById(channelId);
 			const payload = {
 				title: 'GWS Connect',
 				body: 'You have a new message',
@@ -632,7 +756,12 @@ router.post('/', authenticateToken, async (req, res) => {
 			await Promise.all(
 				members
 					.filter((member) => String(member.id) !== String(req.user.id))
-					.map((member) => sendPushToUser(member.id, payload)),
+					.map((member) =>
+						sendPushToUser(member.id, payload, {
+							targetType: 'channel',
+							targetId: channelId,
+						}),
+					),
 			);
 
 			if (mentions.length > 0) {
@@ -650,12 +779,19 @@ router.post('/', authenticateToken, async (req, res) => {
 			io.to(String(recipientId)).emit('message', message);
 			io.to(String(req.user.id)).emit('message', message);
 
-			await sendPushToUser(recipientId, {
-				title: 'GWS Connect',
-				body: 'You have a new message',
-				icon: '/gws-connect-favicon.svg',
-				url: '/dashboard',
-			});
+			await sendPushToUser(
+				recipientId,
+				{
+					title: 'GWS Connect',
+					body: 'You have a new message',
+					icon: '/gws-connect-favicon.svg',
+					url: '/dashboard',
+				},
+				{
+					targetType: 'dm',
+					targetId: req.user.id,
+				},
+			);
 		}
 
 		if (
@@ -680,6 +816,120 @@ router.post('/', authenticateToken, async (req, res) => {
 			context: {
 				source: 'http',
 				route: 'POST /api/messages',
+				userId: req.user?.id,
+				payload: req.body,
+			},
+		});
+		return res.status(500).json({ message: 'Server error' });
+	}
+});
+
+router.post('/scheduled', authenticateToken, async (req, res) => {
+	try {
+		const {
+			content,
+			channelId = null,
+			recipientId = null,
+			groupChatId = null,
+			replyToMessageId = null,
+			cipherText = null,
+			cipherIv = null,
+			isEncrypted = false,
+			deliverAt,
+		} = req.body || {};
+
+		const targetCount = [channelId, recipientId, groupChatId].filter(Boolean).length;
+		if (targetCount !== 1) {
+			return res.status(400).json({
+				message: 'Provide exactly one of channelId, recipientId, or groupChatId',
+			});
+		}
+
+		if (recipientId && String(recipientId) === String(req.user.id)) {
+			return res.status(400).json({ message: 'Invalid direct message target' });
+		}
+
+		const parsedDeliverAt = new Date(deliverAt);
+		if (!deliverAt || Number.isNaN(parsedDeliverAt.getTime())) {
+			return res.status(400).json({ message: 'Valid delivery time required' });
+		}
+
+		if (parsedDeliverAt.getTime() <= Date.now()) {
+			return res.status(400).json({ message: 'Delivery time must be in the future' });
+		}
+
+		if (!isEncrypted && !String(content || '').trim()) {
+			return res.status(400).json({ message: 'Message content required' });
+		}
+
+		if (channelId) {
+			const access = canAccessChannel(
+				channelId,
+				req.user.id,
+				getUserRole(req.user.id),
+			);
+			if (!access.channel) {
+				return res.status(404).json({ message: 'Channel not found' });
+			}
+			if (!access.allowed) {
+				return res.status(403).json({ message: access.reason });
+			}
+		}
+
+		if (groupChatId) {
+			const access = canAccessGroupChat(groupChatId, req.user.id);
+			if (!access.groupChat) {
+				return res.status(404).json({ message: 'Group chat not found' });
+			}
+			if (!access.allowed) {
+				return res.status(403).json({ message: access.reason });
+			}
+		}
+
+		const replyState = resolveReplyState({
+			replyToMessageId,
+			channelId,
+			recipientId,
+			groupChatId,
+			currentUserId: req.user.id,
+		});
+
+		if (replyState.error) {
+			return res.status(400).json({ message: replyState.error });
+		}
+
+		let messageKeyGeneration = null;
+		if (channelId) {
+			messageKeyGeneration = getCurrentChannelKeyGeneration(channelId) || 1;
+		} else if (groupChatId) {
+			messageKeyGeneration = getCurrentGroupChatKeyGeneration(groupChatId) || 1;
+		}
+
+		const scheduledMessageId = createScheduledMessage({
+			userId: req.user.id,
+			channelId,
+			recipientId,
+			groupChatId,
+			content: isEncrypted ? '' : String(content || '').trim(),
+			cipherText: cipherText || null,
+			cipherIv: cipherIv || null,
+			isEncrypted: isEncrypted ? 1 : 0,
+			keyGeneration: messageKeyGeneration,
+			replyToMessageId: replyState.replyToMessageId,
+			threadRootMessageId: replyState.threadRootMessageId,
+			deliverAt: parsedDeliverAt.toISOString(),
+		});
+
+		return res.status(201).json({
+			id: scheduledMessageId,
+			deliverAt: parsedDeliverAt.toISOString(),
+		});
+	} catch (error) {
+		void sendErrorNotification({
+			error,
+			context: {
+				source: 'http',
+				route: 'POST /api/messages/scheduled',
 				userId: req.user?.id,
 				payload: req.body,
 			},
@@ -855,12 +1105,19 @@ router.post(
 					members
 						.filter((member) => String(member.id) !== String(req.user.id))
 						.map((member) =>
-							sendPushToUser(member.id, {
-								title: 'GWS Connect',
-								body: 'You have a new message',
-								icon: '/gws-connect-favicon.svg',
-								url: '/dashboard',
-							}),
+							sendPushToUser(
+								member.id,
+								{
+									title: 'GWS Connect',
+									body: 'You have a new message',
+									icon: '/gws-connect-favicon.svg',
+									url: '/dashboard',
+								},
+								{
+									targetType: 'group',
+									targetId: groupChatId,
+								},
+							),
 						),
 				);
 			} else if (channelId) {
@@ -892,7 +1149,11 @@ router.post(
 
 					await Promise.all(
 						mentionedUserIds.map((userId) =>
-							sendPushToUser(userId, mentionPayload),
+							sendPushToUser(userId, mentionPayload, {
+								targetType: 'channel',
+								targetId: channelId,
+								isMention: true,
+							}),
 						),
 					);
 				}
@@ -957,6 +1218,13 @@ router.get('/channel/:channelId/files', authenticateToken, async (req, res) => {
 			fileUrl: row.fileUrl,
 			fileName: row.fileName,
 			fileType: row.fileType,
+			fileIv: row.fileIv || null,
+			cipherIv: row.cipherIv || null,
+			isEncrypted: row.isEncrypted,
+			keyGeneration:
+				row.keyGeneration === null || row.keyGeneration === undefined
+					? null
+					: Number(row.keyGeneration),
 			timestamp: row.createdAt,
 			senderName: row.senderUsername,
 			senderAvatar: row.senderAvatar,
@@ -985,6 +1253,13 @@ router.get('/direct/:userId/files', authenticateToken, async (req, res) => {
 			fileUrl: row.fileUrl,
 			fileName: row.fileName,
 			fileType: row.fileType,
+			fileIv: row.fileIv || null,
+			cipherIv: row.cipherIv || null,
+			isEncrypted: row.isEncrypted,
+			keyGeneration:
+				row.keyGeneration === null || row.keyGeneration === undefined
+					? null
+					: Number(row.keyGeneration),
 			timestamp: row.createdAt,
 			senderName: row.senderUsername,
 			senderAvatar: row.senderAvatar,
