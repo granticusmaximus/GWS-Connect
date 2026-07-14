@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { mkdirSync } from 'fs';
+import { mkdirSync, existsSync, copyFileSync } from 'fs';
 
 const DEFAULT_AVATAR = '/image.png';
 
@@ -814,6 +814,113 @@ db.exec(`
     FOREIGN KEY (userId2) REFERENCES users(id) ON DELETE CASCADE
   );
 `);
+
+// --- Multi-workspace support ---------------------------------------------
+// Introduces a workspace/team boundary (Slack workspaces / Discord servers
+// style: one global user account, membership + role scoped per workspace)
+// on top of what was previously a single flat instance. SQLite's ALTER
+// TABLE can't add a FOREIGN KEY constraint to an existing table, so the
+// workspaceId columns added below are enforced at the application layer,
+// the same way groupChatId was added to messages earlier in this file.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS workspaces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    iconUrl TEXT DEFAULT '',
+    createdBy INTEGER,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE SET NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS workspace_members (
+    workspaceId INTEGER NOT NULL,
+    userId INTEGER NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user', 'manager', 'admin', 'guest')),
+    joinedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (workspaceId, userId),
+    FOREIGN KEY (workspaceId) REFERENCES workspaces(id) ON DELETE CASCADE,
+    FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(userId);
+`);
+
+const addWorkspaceIdColumn = (table) => {
+	const columns = db
+		.prepare(`PRAGMA table_info('${table}')`)
+		.all()
+		.map((column) => column.name);
+
+	if (!columns.includes('workspaceId')) {
+		db.prepare(`ALTER TABLE ${table} ADD COLUMN workspaceId INTEGER`).run();
+	}
+};
+
+const workspaceScopedTables = [
+	'channels',
+	'group_chats',
+	'webhooks',
+	'workspace_emoji',
+	'invite_links',
+];
+
+workspaceScopedTables.forEach(addWorkspaceIdColumn);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_channels_workspace ON channels(workspaceId);
+  CREATE INDEX IF NOT EXISTS idx_group_chats_workspace ON group_chats(workspaceId);
+  CREATE INDEX IF NOT EXISTS idx_webhooks_workspace ON webhooks(workspaceId);
+  CREATE INDEX IF NOT EXISTS idx_workspace_emoji_workspace ON workspace_emoji(workspaceId);
+  CREATE INDEX IF NOT EXISTS idx_invite_links_workspace ON invite_links(workspaceId);
+`);
+
+if (db.prepare('SELECT COUNT(*) AS count FROM workspaces').get().count === 0) {
+	// First boot after this migration lands - back up the live DB file before
+	// touching it, mirroring the backup-before-write discipline already used
+	// by services/dataSnapshot.js for the admin data-sync feature.
+	if (existsSync(currentDbPath)) {
+		const backupDir = path.join(path.dirname(currentDbPath), 'backups');
+		mkdirSync(backupDir, { recursive: true });
+		const backupPath = path.join(
+			backupDir,
+			`pre-workspace-migration-${new Date().toISOString().replace(/[:.]/g, '-')}.db`,
+		);
+		copyFileSync(currentDbPath, backupPath);
+		console.log('Pre-workspace-migration backup written to:', backupPath);
+	}
+
+	const backfillDefaultWorkspace = db.transaction(() => {
+		const firstAdmin = db
+			.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1")
+			.get();
+		const firstUser = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
+		const createdBy = firstAdmin?.id ?? firstUser?.id ?? null;
+
+		const { lastInsertRowid: workspaceId } = db
+			.prepare(
+				"INSERT INTO workspaces (name, slug, createdBy) VALUES ('Default Workspace', 'default', ?)",
+			)
+			.run(createdBy);
+
+		workspaceScopedTables.forEach((table) => {
+			db.prepare(`UPDATE ${table} SET workspaceId = ? WHERE workspaceId IS NULL`).run(
+				workspaceId,
+			);
+		});
+
+		db.prepare(
+			`INSERT OR IGNORE INTO workspace_members (workspaceId, userId, role)
+			 SELECT ?, id, CASE WHEN isGuest = 1 THEN 'guest' ELSE COALESCE(role, 'user') END
+			 FROM users`,
+		).run(workspaceId);
+
+		return workspaceId;
+	});
+
+	const workspaceId = backfillDefaultWorkspace();
+	console.log(`Backfilled existing data into Default Workspace (id ${workspaceId}).`);
+}
 
 db.prepare(
 	`UPDATE users

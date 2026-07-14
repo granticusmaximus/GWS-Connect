@@ -79,12 +79,13 @@ export const createChannel = (
 	status = 'approved',
 	isPrivate = 0,
 	userRole = 'user',
+	workspaceId = null,
 ) => {
 	const stmt = db.prepare(`
-    INSERT INTO channels (name, description, createdBy, status, isPrivate)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO channels (name, description, createdBy, status, isPrivate, workspaceId)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
-	const result = stmt.run(name, description, createdBy, status, isPrivate);
+	const result = stmt.run(name, description, createdBy, status, isPrivate, workspaceId);
 	const channelId = result.lastInsertRowid;
 
 	// Add creator as a member
@@ -320,9 +321,17 @@ const isChannelManagerForAccess = (channelId, userId) => {
 	return stmt.get(channelId, userId) !== undefined;
 };
 
-export const canAccessChannel = (channelId, userId, role = 'user') => {
+export const canAccessChannel = (channelId, userId, role = 'user', workspaceId = null) => {
 	const channel = findChannelById(channelId);
 	if (!channel) {
+		return { allowed: false, reason: 'Channel not found', channel: null };
+	}
+
+	if (
+		workspaceId != null &&
+		channel.workspaceId != null &&
+		String(channel.workspaceId) !== String(workspaceId)
+	) {
 		return { allowed: false, reason: 'Channel not found', channel: null };
 	}
 
@@ -360,7 +369,7 @@ export const canAccessChannel = (channelId, userId, role = 'user') => {
 	return { allowed: true, channel };
 };
 
-export const findVisibleChannelsForUser = (userId, role) => {
+export const findVisibleChannelsForUser = (userId, role, workspaceId = null) => {
 	let channels = [];
 
 	if (role === 'admin') {
@@ -368,9 +377,10 @@ export const findVisibleChannelsForUser = (userId, role) => {
       SELECT c.*, u.username as creatorUsername, u.avatar as creatorAvatar
       FROM channels c
       JOIN users u ON c.createdBy = u.id
+      WHERE (? IS NULL OR c.workspaceId = ?)
       ORDER BY c.createdAt DESC
     `);
-		channels = stmt.all();
+		channels = stmt.all(workspaceId, workspaceId);
 		return attachChannelReadState(channels, userId);
 	}
 
@@ -382,12 +392,15 @@ export const findVisibleChannelsForUser = (userId, role) => {
       LEFT JOIN channel_members cm ON cm.channelId = c.id AND cm.userId = ?
       LEFT JOIN channel_managers m ON m.channelId = c.id AND m.userId = ?
       LEFT JOIN channel_bans cb ON cb.channelId = c.id AND cb.userId = ?
-      WHERE c.createdBy = ?
-         OR m.userId IS NOT NULL
-         OR (c.status = 'approved' AND cb.userId IS NULL AND (c.isPrivate = 0 OR cm.userId IS NOT NULL))
+      WHERE (? IS NULL OR c.workspaceId = ?)
+        AND (
+          c.createdBy = ?
+          OR m.userId IS NOT NULL
+          OR (c.status = 'approved' AND cb.userId IS NULL AND (c.isPrivate = 0 OR cm.userId IS NOT NULL))
+        )
       ORDER BY c.createdAt DESC
     `);
-		channels = stmt.all(userId, userId, userId, userId);
+		channels = stmt.all(userId, userId, userId, workspaceId, workspaceId, userId);
 		return attachChannelReadState(channels, userId);
 	}
 
@@ -400,9 +413,10 @@ export const findVisibleChannelsForUser = (userId, role) => {
       LEFT JOIN channel_bans cb ON cb.channelId = c.id AND cb.userId = ?
       WHERE c.status = 'approved'
         AND cb.userId IS NULL
+        AND (? IS NULL OR c.workspaceId = ?)
       ORDER BY c.createdAt DESC
     `);
-		channels = stmt.all(userId, userId);
+		channels = stmt.all(userId, userId, workspaceId, workspaceId);
 		return attachChannelReadState(channels, userId);
 	}
 
@@ -415,9 +429,10 @@ export const findVisibleChannelsForUser = (userId, role) => {
     WHERE c.status = 'approved'
       AND cb.userId IS NULL
       AND (c.isPrivate = 0 OR cm.userId IS NOT NULL)
+      AND (? IS NULL OR c.workspaceId = ?)
     ORDER BY c.createdAt DESC
   `);
-	channels = stmt.all(userId, userId);
+	channels = stmt.all(userId, userId, workspaceId, workspaceId);
 	return attachChannelReadState(channels, userId);
 };
 

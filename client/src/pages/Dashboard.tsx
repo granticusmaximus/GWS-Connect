@@ -4,6 +4,7 @@ import { useChatStore } from '../store/chatStore'
 import { useThemeStore } from '../store/themeStore'
 import { isMobileDevice } from '../utils/responsive'
 import Sidebar from '../components/Sidebar'
+import WorkspaceSwitcher from '../components/WorkspaceSwitcher'
 import ChatWindow from '../components/ChatWindow'
 import Header from '../components/Header'
 import ForcePasswordChangeModal from '../components/ForcePasswordChangeModal'
@@ -99,6 +100,7 @@ export default function Dashboard() {
             aria-label="Close sidebar"
           />
         )}
+        <WorkspaceSwitcher />
         <Sidebar
           isMobileOpen={isSidebarOpen}
           onClose={handleSidebarClose}

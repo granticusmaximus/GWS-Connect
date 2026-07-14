@@ -16,14 +16,29 @@ import {
 	markChannelVisited,
 	rotateChannelKey,
 } from '../models/Channel.js';
+import { getDefaultWorkspaceForUser, isWorkspaceMember } from '../models/Workspace.js';
 
 const router = express.Router();
 
-// Get all channels (approved only for regular users)
+// Resolves the workspace a channel-list/create request applies to: an
+// explicit ?workspaceId (or body.workspaceId) if the requester actually
+// belongs to it, otherwise the user's first/default workspace. Returns
+// null only for users with no workspace membership at all.
+const resolveRequestWorkspaceId = (req) => {
+	const requested = req.query.workspaceId || req.body?.workspaceId;
+	if (requested && isWorkspaceMember(requested, req.user.id)) {
+		return requested;
+	}
+	return getDefaultWorkspaceForUser(req.user.id)?.id ?? null;
+};
+
+// Get all channels (approved only for regular users) within the caller's
+// active workspace.
 router.get('/', authenticateToken, async (req, res) => {
 	try {
 		const userRole = getUserRole(req.user.id);
-		const channels = findVisibleChannelsForUser(req.user.id, userRole);
+		const workspaceId = resolveRequestWorkspaceId(req);
+		const channels = findVisibleChannelsForUser(req.user.id, userRole, workspaceId);
 		res.json(channels);
 	} catch (error) {
 		res.status(500).json({ message: 'Server error' });
@@ -36,6 +51,7 @@ router.post('/', authenticateToken, async (req, res) => {
 		const { name, description, isPrivate, wrappedKey, wrappedIv } = req.body;
 		const userRole = getUserRole(req.user.id);
 		const privacyValue = isPrivate ? 1 : 0;
+		const workspaceId = resolveRequestWorkspaceId(req);
 
 		if (userRole === 'guest') {
 			return res.status(403).json({
@@ -63,6 +79,7 @@ router.post('/', authenticateToken, async (req, res) => {
 			status,
 			privacyValue,
 			userRole,
+			workspaceId,
 		);
 		const channel = findChannelById(channelId);
 		channel.status = status;

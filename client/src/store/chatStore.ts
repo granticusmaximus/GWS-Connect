@@ -329,6 +329,15 @@ export interface Channel {
     disappearingMessagesSeconds?: number
     currentKeyGeneration?: number
     keyGenerationRotatedAt?: string
+    workspaceId?: string | null
+}
+
+export interface Workspace {
+    id: string
+    name: string
+    slug: string
+    iconUrl?: string
+    memberRole?: string
 }
 
 export interface DirectMessage {
@@ -421,6 +430,8 @@ interface SharedFileItem {
 interface ChatState {
     socket: Socket | null
     channels: Channel[]
+    workspaces: Workspace[]
+    activeWorkspaceId: string | null
     directMessages: DirectMessage[]
     groupChats: GroupChat[]
     voiceChannels: VoiceChannel[]
@@ -482,6 +493,9 @@ interface ChatState {
     restoreActiveChat: (userId: string) => void
     loadChannels: () => Promise<void>
     createChannel: (name: string, description: string, isPrivate: boolean) => Promise<{ ok: boolean; message?: string }>
+    loadWorkspaces: () => Promise<void>
+    switchWorkspace: (workspaceId: string) => Promise<void>
+    createWorkspace: (name: string) => Promise<{ ok: boolean; message?: string }>
     loadDirectConversations: () => Promise<void>
     loadChannelMessages: (channelId: string) => Promise<void>
     loadDirectMessages: (userId: string) => Promise<void>
@@ -496,6 +510,8 @@ interface ChatState {
 export const useChatStore = create<ChatState>((set, get) => ({
     socket: null,
     channels: [],
+    workspaces: [],
+    activeWorkspaceId: null,
     directMessages: [],
     groupChats: [],
     voiceChannels: [],
@@ -663,6 +679,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         socket.on('disconnect', (reason) => {
             console.warn('Socket disconnected:', reason)
+        })
+
+        socket.on('workspaces', (payload: { workspaces: Workspace[]; activeWorkspaceId: string | null }) => {
+            set({ workspaces: payload.workspaces, activeWorkspaceId: payload.activeWorkspaceId })
         })
 
         socket.on('channels', (channels: Channel[]) => {
@@ -1933,7 +1953,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     loadChannels: async () => {
         try {
-            const response = await axios.get(`${API_URL}/channels`)
+            const { activeWorkspaceId } = get()
+            const response = await axios.get(`${API_URL}/channels`, {
+                params: activeWorkspaceId ? { workspaceId: activeWorkspaceId } : undefined,
+            })
             const normalized = response.data.map((channel: Channel) => normalizeChannel(channel))
             const { activeChannel, socket } = get()
             const hasActiveChannelAccess = activeChannel
@@ -1989,6 +2012,46 @@ export const useChatStore = create<ChatState>((set, get) => ({
             console.error('Error creating channel:', error)
             const axiosError = error as { response?: { data?: { message?: string } } }
             return { ok: false, message: axiosError.response?.data?.message || 'Failed to create channel' }
+        }
+    },
+
+    loadWorkspaces: async () => {
+        try {
+            const response = await axios.get(`${API_URL}/workspaces`)
+            const workspaces: Workspace[] = response.data
+            const { activeWorkspaceId } = get()
+            const stillValid = activeWorkspaceId
+                ? workspaces.some((workspace) => workspace.id === activeWorkspaceId)
+                : false
+
+            set({
+                workspaces,
+                activeWorkspaceId: stillValid ? activeWorkspaceId : workspaces[0]?.id ?? null,
+            })
+        } catch (error) {
+            console.error('Error loading workspaces:', error)
+        }
+    },
+
+    switchWorkspace: async (workspaceId) => {
+        if (get().activeWorkspaceId === workspaceId) {
+            return
+        }
+        set({ activeWorkspaceId: workspaceId, activeChannel: null })
+        clearPersistedActiveChat()
+        await get().loadChannels()
+    },
+
+    createWorkspace: async (name) => {
+        try {
+            const response = await axios.post(`${API_URL}/workspaces`, { name })
+            await get().loadWorkspaces()
+            await get().switchWorkspace(response.data.id)
+            return { ok: true }
+        } catch (error) {
+            console.error('Error creating workspace:', error)
+            const axiosError = error as { response?: { data?: { message?: string } } }
+            return { ok: false, message: axiosError.response?.data?.message || 'Failed to create workspace' }
         }
     },
 

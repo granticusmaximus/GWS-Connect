@@ -53,6 +53,20 @@ interface WorkspaceEmoji {
 	createdAt?: string;
 }
 
+interface TeamWorkspace {
+	id: string;
+	name: string;
+	slug: string;
+	memberRole?: string;
+}
+
+interface TeamWorkspaceMember {
+	id: string;
+	username: string;
+	avatar?: string;
+	role: string;
+}
+
 type AdminTab = 'overview' | 'reports' | 'audit';
 
 const formatAuditAction = (action: string) =>
@@ -133,12 +147,75 @@ export default function AdminPanel() {
 	const [deletingEmojiId, setDeletingEmojiId] = useState<string | null>(null);
 	const [dataSyncLoading, setDataSyncLoading] = useState(false);
 	const [dataSyncMessage, setDataSyncMessage] = useState<string | null>(null);
+	const [teamWorkspaces, setTeamWorkspaces] = useState<TeamWorkspace[]>([]);
+	const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('');
+	const [workspaceMembers, setWorkspaceMembers] = useState<TeamWorkspaceMember[]>([]);
+	const [newMemberUsername, setNewMemberUsername] = useState('');
+	const [workspaceActionMessage, setWorkspaceActionMessage] = useState<string | null>(null);
 
 	useEffect(() => {
 		if (user?.role === 'admin') {
 			void loadData();
+			void loadTeamWorkspaces();
 		}
 	}, [user]);
+
+	useEffect(() => {
+		if (selectedWorkspaceId) {
+			void loadWorkspaceMembers(selectedWorkspaceId);
+		}
+	}, [selectedWorkspaceId]);
+
+	const loadTeamWorkspaces = async () => {
+		try {
+			const response = await axios.get(`${API_URL}/workspaces`);
+			setTeamWorkspaces(response.data);
+			setSelectedWorkspaceId((current) => current || response.data[0]?.id || '');
+		} catch (error) {
+			console.error('Load workspaces error:', error);
+		}
+	};
+
+	const loadWorkspaceMembers = async (workspaceId: string) => {
+		try {
+			const response = await axios.get(`${API_URL}/workspaces/${workspaceId}/members`);
+			setWorkspaceMembers(response.data);
+		} catch (error) {
+			console.error('Load workspace members error:', error);
+		}
+	};
+
+	const addWorkspaceMember = async () => {
+		if (!newMemberUsername.trim() || !selectedWorkspaceId) {
+			return;
+		}
+		setWorkspaceActionMessage(null);
+		try {
+			await axios.post(`${API_URL}/workspaces/${selectedWorkspaceId}/members`, {
+				username: newMemberUsername.trim(),
+			});
+			setNewMemberUsername('');
+			await loadWorkspaceMembers(selectedWorkspaceId);
+		} catch (error) {
+			console.error('Add workspace member error:', error);
+			const axiosError = error as { response?: { data?: { message?: string } } };
+			setWorkspaceActionMessage(axiosError.response?.data?.message || 'Failed to add member');
+		}
+	};
+
+	const removeWorkspaceMember = async (userId: string) => {
+		if (!selectedWorkspaceId) {
+			return;
+		}
+		try {
+			await axios.delete(`${API_URL}/workspaces/${selectedWorkspaceId}/members/${userId}`);
+			await loadWorkspaceMembers(selectedWorkspaceId);
+		} catch (error) {
+			console.error('Remove workspace member error:', error);
+			const axiosError = error as { response?: { data?: { message?: string } } };
+			setWorkspaceActionMessage(axiosError.response?.data?.message || 'Failed to remove member');
+		}
+	};
 
 	const loadData = async () => {
 		try {
@@ -497,6 +574,72 @@ export default function AdminPanel() {
 									</button>
 								</div>
 							</div>
+						</section>
+
+						<section className="mb-8 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900 sm:p-6">
+							<div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+								<div className="min-w-0">
+									<h2 className="text-lg font-semibold text-gray-900 dark:text-white sm:text-2xl">
+										Workspaces
+									</h2>
+									<p className="mt-2 max-w-3xl text-sm text-gray-600 dark:text-gray-300">
+										Manage who belongs to each workspace and their role within it.
+									</p>
+									{workspaceActionMessage && (
+										<p className="mt-2 text-sm font-medium text-red-600 dark:text-red-400">
+											{workspaceActionMessage}
+										</p>
+									)}
+								</div>
+								<select
+									value={selectedWorkspaceId}
+									onChange={(event) => setSelectedWorkspaceId(event.target.value)}
+									className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+								>
+									{teamWorkspaces.map((workspace) => (
+										<option key={workspace.id} value={workspace.id}>
+											{workspace.name}
+										</option>
+									))}
+								</select>
+							</div>
+
+							<div className="mt-4 flex flex-col gap-2 sm:flex-row">
+								<input
+									type="text"
+									value={newMemberUsername}
+									onChange={(event) => setNewMemberUsername(event.target.value)}
+									placeholder="Username to add"
+									className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+								/>
+								<button
+									type="button"
+									onClick={() => void addWorkspaceMember()}
+									className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-primary-700"
+								>
+									Add Member
+								</button>
+							</div>
+
+							<ul className="mt-4 divide-y divide-gray-100 dark:divide-gray-800">
+								{workspaceMembers.map((member) => (
+									<li key={member.id} className="flex items-center justify-between py-2">
+										<span className="text-sm text-gray-900 dark:text-white">
+											{member.username}
+											<span className="ml-2 text-xs uppercase text-gray-500 dark:text-gray-400">
+												{member.role}
+											</span>
+										</span>
+										<button
+											type="button"
+											onClick={() => void removeWorkspaceMember(member.id)}
+											className="text-xs font-medium text-red-600 hover:underline dark:text-red-400"
+										>
+											Remove
+										</button>
+									</li>
+								))}
+							</ul>
 						</section>
 
 						<section className="mb-8">

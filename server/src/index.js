@@ -28,9 +28,11 @@ import webhookRoutes from './routes/webhooks.js';
 import workspaceEmojiRoutes from './routes/workspaceEmoji.js';
 import voiceChannelRoutes from './routes/voiceChannels.js';
 import dataSyncRoutes from './routes/dataSync.js';
+import workspaceRoutes from './routes/workspaces.js';
 import { authenticateSocket } from './middleware/auth.js';
 import { canSendMessage, getUserRole } from './middleware/roles.js';
 import { canAccessChannel } from './models/Channel.js';
+import { getDefaultWorkspaceForUser, listWorkspacesForUser } from './models/Workspace.js';
 import { canAccessGroupChat, findGroupChatsForUser } from './models/GroupChat.js';
 import { findVoiceChannelById } from './models/VoiceChannel.js';
 import {
@@ -195,6 +197,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/channels', channelRoutes);
+app.use('/api/workspaces', workspaceRoutes);
 app.use('/api/group-chats', groupChatRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/admin', adminRoutes);
@@ -458,11 +461,19 @@ io.on('connection', async (socket) => {
 	// Join user's personal room
 	socket.join(String(socket.user.id));
 
-	// Load and send available channels
+	// Load and send available channels, scoped to the user's default workspace
 	try {
 		const { findVisibleChannelsForUser } = await import('./models/Channel.js');
 		const userRole = getUserRole(socket.user.id);
-		const channels = findVisibleChannelsForUser(socket.user.id, userRole);
+		const workspaces = listWorkspacesForUser(socket.user.id);
+		const activeWorkspace = getDefaultWorkspaceForUser(socket.user.id);
+		socket.emit('workspaces', { workspaces, activeWorkspaceId: activeWorkspace?.id ?? null });
+
+		const channels = findVisibleChannelsForUser(
+			socket.user.id,
+			userRole,
+			activeWorkspace?.id ?? null,
+		);
 		socket.emit('channels', channels);
 
 		// Auto-join general channel if it exists

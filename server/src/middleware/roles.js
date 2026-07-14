@@ -1,4 +1,5 @@
 import db from '../database.js';
+import { getUserRoleInWorkspace } from '../models/Workspace.js';
 
 // Check if user is admin
 export const requireAdmin = (req, res, next) => {
@@ -70,6 +71,40 @@ export const requireChannelManagerOrAdmin = (channelIdParam = 'channelId') => {
 		}
 
 		req.userRole = 'manager';
+		next();
+	};
+};
+
+// Require the requesting user to hold at least `minRole` within the
+// workspace named by `workspaceIdParam` (route param or body field).
+// Instance-level 'admin' (users.role) always passes, same as the
+// channel-scoped middleware above.
+const workspaceRoleRank = { guest: 0, user: 1, manager: 2, admin: 3 };
+
+export const requireWorkspaceRole = (minRole = 'user', workspaceIdParam = 'workspaceId') => {
+	return (req, res, next) => {
+		const workspaceId = req.params[workspaceIdParam] || req.body.workspaceId;
+
+		if (!workspaceId) {
+			return res.status(400).json({ message: 'Workspace ID required' });
+		}
+
+		const user = db.prepare('SELECT role FROM users WHERE id = ?').get(req.user.id);
+		if (!user) {
+			return res.status(404).json({ message: 'User not found' });
+		}
+
+		if (user.role === 'admin') {
+			req.workspaceRole = 'admin';
+			return next();
+		}
+
+		const workspaceRole = getUserRoleInWorkspace(workspaceId, req.user.id);
+		if (!workspaceRole || workspaceRoleRank[workspaceRole] < workspaceRoleRank[minRole]) {
+			return res.status(403).json({ message: 'Insufficient workspace role' });
+		}
+
+		req.workspaceRole = workspaceRole;
 		next();
 	};
 };
