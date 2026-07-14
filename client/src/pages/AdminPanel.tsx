@@ -131,6 +131,8 @@ export default function AdminPanel() {
 	const [emojiFile, setEmojiFile] = useState<File | null>(null);
 	const [uploadingEmoji, setUploadingEmoji] = useState(false);
 	const [deletingEmojiId, setDeletingEmojiId] = useState<string | null>(null);
+	const [dataSyncLoading, setDataSyncLoading] = useState(false);
+	const [dataSyncMessage, setDataSyncMessage] = useState<string | null>(null);
 
 	useEffect(() => {
 		if (user?.role === 'admin') {
@@ -337,6 +339,56 @@ export default function AdminPanel() {
 		}
 	};
 
+	const exportLocalDataSnapshot = async () => {
+		setDataSyncLoading(true);
+		setDataSyncMessage(null);
+
+		try {
+			const response = await axios.get(`${API_URL}/admin/data-sync/export`, {
+				responseType: 'blob',
+			});
+			const blob = new Blob([response.data], {
+				type: response.headers['content-type'] || 'application/gzip',
+			});
+			const objectUrl = window.URL.createObjectURL(blob);
+			const link = document.createElement('a');
+			const contentDisposition = String(response.headers['content-disposition'] || '');
+			const filenameMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+			link.href = objectUrl;
+			link.download = filenameMatch?.[1] || 'gws-connect-data-snapshot.tar.gz';
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+			window.URL.revokeObjectURL(objectUrl);
+			setDataSyncMessage('Local snapshot exported');
+		} catch (error) {
+			console.error('Data snapshot export error:', error);
+			alert('Failed to export local snapshot');
+		} finally {
+			setDataSyncLoading(false);
+		}
+	};
+
+	const pushLocalDataToProduction = async () => {
+		if (!confirm('Push the current local data snapshot to production?')) {
+			return;
+		}
+
+		setDataSyncLoading(true);
+		setDataSyncMessage(null);
+
+		try {
+			const response = await axios.post(`${API_URL}/admin/data-sync/push`);
+			setDataSyncMessage(response.data?.message || 'Production data sync completed');
+			await loadData();
+		} catch (error) {
+			console.error('Data snapshot push error:', error);
+			alert('Failed to push local data to production');
+		} finally {
+			setDataSyncLoading(false);
+		}
+	};
+
 	if (user?.role !== 'admin') {
 		return (
 			<div className="min-h-screen bg-gray-100 dark:bg-gray-900">
@@ -411,6 +463,42 @@ export default function AdminPanel() {
 
 				{activeTab === 'overview' && (
 					<>
+						<section className="mb-8 rounded-2xl border border-primary-200 bg-primary-50 p-4 shadow-sm dark:border-primary-900/40 dark:bg-primary-900/10 sm:p-6">
+							<div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+								<div className="min-w-0">
+									<h2 className="text-lg font-semibold text-gray-900 dark:text-white sm:text-2xl">
+										Data Snapshot Sync
+									</h2>
+									<p className="mt-2 max-w-3xl text-sm text-gray-600 dark:text-gray-300">
+										Export the current local SQLite data and uploads, or push that snapshot directly to production using the server-side sync pipeline.
+									</p>
+									{dataSyncMessage && (
+										<p className="mt-2 text-sm font-medium text-primary-700 dark:text-primary-200">
+											{dataSyncMessage}
+										</p>
+									)}
+								</div>
+								<div className="flex flex-col gap-2 sm:flex-row">
+									<button
+										type="button"
+										onClick={() => void exportLocalDataSnapshot()}
+										disabled={dataSyncLoading}
+										className="rounded-lg border border-primary-300 bg-white px-4 py-3 text-sm font-medium text-primary-700 transition hover:bg-primary-50 disabled:opacity-60 dark:border-primary-700 dark:bg-gray-900 dark:text-primary-200 dark:hover:bg-gray-800 sm:py-2"
+									>
+										Export Snapshot
+									</button>
+									<button
+										type="button"
+										onClick={() => void pushLocalDataToProduction()}
+										disabled={dataSyncLoading}
+										className="rounded-lg bg-primary-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-primary-700 disabled:opacity-60 sm:py-2"
+									>
+										{dataSyncLoading ? 'Syncing...' : 'Push to Production'}
+									</button>
+								</div>
+							</div>
+						</section>
+
 						<section className="mb-8">
 							<div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
 								<h2 className="text-lg font-semibold text-gray-900 dark:text-white sm:text-2xl">

@@ -27,6 +27,7 @@ import sidebarRoutes from './routes/sidebar.js';
 import webhookRoutes from './routes/webhooks.js';
 import workspaceEmojiRoutes from './routes/workspaceEmoji.js';
 import voiceChannelRoutes from './routes/voiceChannels.js';
+import dataSyncRoutes from './routes/dataSync.js';
 import { authenticateSocket } from './middleware/auth.js';
 import { canSendMessage, getUserRole } from './middleware/roles.js';
 import { canAccessChannel } from './models/Channel.js';
@@ -45,6 +46,7 @@ import {
 import { broadcastPresenceState } from './services/presence.js';
 import { sendErrorNotification } from './services/errorReporter.js';
 import { startScheduledMessageDispatcher } from './services/scheduledDispatcher.js';
+import { isDataSyncInProgress } from './services/syncState.js';
 import { logSocketError, errorLoggingMiddleware } from './utils/logger.js';
 
 dotenv.config();
@@ -154,6 +156,20 @@ app.use(
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+app.use((req, res, next) => {
+	if (!isDataSyncInProgress()) {
+		next();
+		return;
+	}
+
+	if (req.path.startsWith('/api/internal/data-sync/import')) {
+		next();
+		return;
+	}
+
+	res.status(503).json({ message: 'Data sync in progress' });
+});
+
 const apiRateLimiter = rateLimit({
 	windowMs: 15 * 60 * 1000,
 	limit: 300,
@@ -182,6 +198,7 @@ app.use('/api/channels', channelRoutes);
 app.use('/api/group-chats', groupChatRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api', dataSyncRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/manager', managerRoutes);
 app.use('/api/notifications', notificationRoutes);

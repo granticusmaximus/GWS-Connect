@@ -14,6 +14,7 @@ Modes:
   upload   Local dev DB -> production host -> remote deploy/restart
   remote   Run the host-side staged-file deploy only
   sync     Dev-to-prod sync using the existing local DB source
+  full     Sync the full dev data set (data + uploads) to production
 
 Examples:
   PROD_HOST=connect.gwsapp.net \
@@ -35,6 +36,12 @@ Examples:
   PROD_RESTART_CMD='systemctl restart gws-connect' \
   CONFIRM=YES \
   npm run db:deploy -- sync
+
+  PROD_HOST=connect.gwsapp.net \
+  PROD_USER=deploy \
+  PROD_DB_PATH=/opt/apps/GWS-Connect/repo/server/data/gws-connect.db \
+  CONFIRM=YES \
+  npm run db:deploy -- full
 EOF
 }
 
@@ -47,6 +54,9 @@ case "$MODE" in
     ;;
   sync|s|dev-to-prod|pre-staged)
     exec bash "$ROOT_DIR/scripts/db/sync-dev-to-prod.sh" "$@"
+    ;;
+  full|all|everything|data|data-sync)
+    exec bash "$ROOT_DIR/scripts/db/upload-and-remote-full-sync.sh" "$@"
     ;;
   ""|help|-h|--help)
     usage

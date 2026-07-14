@@ -138,6 +138,11 @@ If you want the local dev DB pushed over and then deployed automatically, use `d
 
 If you want one command that chooses the flow for you, use `db:deploy` with one of these modes: `upload`, `remote`, or `sync`.
 
+Pushes to `main` automatically trigger the GitHub Actions deploy workflow in `.github/workflows/deploy.yml`, which pulls the latest commit on the production host and rebuilds the stack.
+The data-sync scripts still need the source data to exist somewhere the automation can read it; because `server/data` and `server/uploads` are gitignored, GitHub push events can deploy code automatically but cannot magically recreate local-only SQLite or upload files that were never shipped.
+
+The in-app data sync flow is admin-driven: the admin panel now has a `Data Snapshot Sync` section that can export the current local snapshot or push it directly to production through the backend. To enable the push, set `PRODUCTION_SYNC_URL` and `DATA_SYNC_SHARED_SECRET` in `server/.env` for the local environment and the same shared secret on production.
+
 Example remote-only deploy command:
 
 ```bash

@@ -9,6 +9,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const defaultDbPath = path.join(__dirname, '..', 'data', 'gws-connect.db');
 const configuredDbPath = process.env.DB_PATH;
+let currentDbPath = configuredDbPath || defaultDbPath;
 
 if (process.env.NODE_ENV === 'production' && !configuredDbPath) {
 	throw new Error(
@@ -16,13 +17,11 @@ if (process.env.NODE_ENV === 'production' && !configuredDbPath) {
 	);
 }
 
-const dbPath = configuredDbPath || defaultDbPath;
-
 // Ensure the data directory exists
-const dbDir = path.dirname(dbPath);
+const dbDir = path.dirname(currentDbPath);
 mkdirSync(dbDir, { recursive: true });
 
-const db = new Database(dbPath);
+let db = new Database(currentDbPath);
 
 // Enable foreign keys
 db.pragma('foreign_keys = ON');
@@ -833,10 +832,26 @@ db.exec(`
   DROP TABLE IF EXISTS messages_fts;
 `);
 
-console.log('SQLite database initialized at:', dbPath);
+console.log('SQLite database initialized at:', currentDbPath);
 
 if (!configuredDbPath) {
 	console.warn('Using default DB_PATH (local development):', defaultDbPath);
 }
 
-export default db;
+export const getDatabasePath = () => currentDbPath;
+
+export const reloadDatabase = (nextDbPath = currentDbPath) => {
+	try {
+		db.close();
+	} catch {
+		// Ignore close failures and re-open the handle below.
+	}
+
+	currentDbPath = nextDbPath;
+	mkdirSync(path.dirname(currentDbPath), { recursive: true });
+	db = new Database(currentDbPath);
+	db.pragma('foreign_keys = ON');
+	return db;
+};
+
+export { db as default };
