@@ -922,6 +922,27 @@ if (db.prepare('SELECT COUNT(*) AS count FROM workspaces').get().count === 0) {
 	console.log(`Backfilled existing data into Default Workspace (id ${workspaceId}).`);
 }
 
+// Slack-style `/command` integrations: an admin registers a command name +
+// target URL per workspace; triggering it POSTs to targetUrl and the
+// response is posted back into the channel as a plaintext impersonated
+// message (same E2EE trade-off already accepted for incoming webhooks below).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS custom_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspaceId INTEGER NOT NULL,
+    command TEXT NOT NULL,
+    targetUrl TEXT NOT NULL,
+    secret TEXT NOT NULL,
+    createdBy INTEGER NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (workspaceId) REFERENCES workspaces(id) ON DELETE CASCADE,
+    FOREIGN KEY (createdBy) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS uniq_custom_commands_workspace_command
+    ON custom_commands(workspaceId, command);
+`);
+
 db.prepare(
 	`UPDATE users
    SET avatar = ?

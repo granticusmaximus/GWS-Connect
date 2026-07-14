@@ -170,6 +170,8 @@ export default function MessageInput({
     scheduleMessage,
     createPoll,
     sendGif,
+    customCommands,
+    executeCustomCommand,
     emitTypingStart,
     emitTypingStop,
     typingUsersByChatId,
@@ -527,6 +529,27 @@ export default function MessageInput({
         onCancelReply?.()
       }
       return
+    }
+
+    // Custom Commands (admin-registered /word integrations) are channel-only
+    // and never persist the typed "/command args" text itself - only a
+    // registered match short-circuits the normal send path below, so an
+    // unrecognized "/whatever" still sends as plain literal text exactly as
+    // it always has.
+    const customCommandMatch = channelId ? message.trim().match(/^\/([a-z0-9-]+)(?:\s+([\s\S]*))?$/i) : null
+    if (customCommandMatch) {
+      const [, commandName, args] = customCommandMatch
+      const isRegistered = customCommands.some(
+        (entry) => entry.command.toLowerCase() === commandName.toLowerCase(),
+      )
+      if (isRegistered) {
+        setMessage('')
+        setMentionContext(null)
+        setEmojiContext(null)
+        onCancelReply?.()
+        await executeCustomCommand(commandName.toLowerCase(), args || '', channelId)
+        return
+      }
     }
 
     const sent = await sendMessage(message, channelId, recipientId, undefined, replyTarget?.id, groupChatId)

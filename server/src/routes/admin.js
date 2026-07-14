@@ -16,6 +16,7 @@ import {
 	sendAdminResetPasswordEmail,
 } from '../services/email.js';
 import { listAuditEvents, logAuditEvent } from '../services/auditLog.js';
+import { addWorkspaceMember, findEarliestWorkspace } from '../models/Workspace.js';
 
 const router = express.Router();
 
@@ -286,6 +287,11 @@ router.post('/users', authenticateToken, requireAdmin, async (req, res) => {
 		db.prepare('UPDATE users SET mustChangePassword = 1 WHERE id = ?').run(
 			userId,
 		);
+
+		const earliestWorkspace = findEarliestWorkspace();
+		if (earliestWorkspace) {
+			addWorkspaceMember(earliestWorkspace.id, userId, normalizedRole);
+		}
 
 		try {
 			await sendTemporaryPasswordEmail({

@@ -67,6 +67,13 @@ interface TeamWorkspaceMember {
 	role: string;
 }
 
+interface CustomCommand {
+	id: string;
+	command: string;
+	targetUrl: string;
+	createdAt?: string;
+}
+
 type AdminTab = 'overview' | 'reports' | 'audit';
 
 const formatAuditAction = (action: string) =>
@@ -152,6 +159,10 @@ export default function AdminPanel() {
 	const [workspaceMembers, setWorkspaceMembers] = useState<TeamWorkspaceMember[]>([]);
 	const [newMemberUsername, setNewMemberUsername] = useState('');
 	const [workspaceActionMessage, setWorkspaceActionMessage] = useState<string | null>(null);
+	const [customCommands, setCustomCommands] = useState<CustomCommand[]>([]);
+	const [newCommandName, setNewCommandName] = useState('');
+	const [newCommandUrl, setNewCommandUrl] = useState('');
+	const [commandActionMessage, setCommandActionMessage] = useState<string | null>(null);
 
 	useEffect(() => {
 		if (user?.role === 'admin') {
@@ -163,6 +174,7 @@ export default function AdminPanel() {
 	useEffect(() => {
 		if (selectedWorkspaceId) {
 			void loadWorkspaceMembers(selectedWorkspaceId);
+			void loadCustomCommands(selectedWorkspaceId);
 		}
 	}, [selectedWorkspaceId]);
 
@@ -214,6 +226,60 @@ export default function AdminPanel() {
 			console.error('Remove workspace member error:', error);
 			const axiosError = error as { response?: { data?: { message?: string } } };
 			setWorkspaceActionMessage(axiosError.response?.data?.message || 'Failed to remove member');
+		}
+	};
+
+	const loadCustomCommands = async (workspaceId: string) => {
+		try {
+			const response = await axios.get(`${API_URL}/custom-commands`, {
+				params: { workspaceId },
+			});
+			setCustomCommands(response.data);
+		} catch (error) {
+			console.error('Load custom commands error:', error);
+		}
+	};
+
+	const addCustomCommand = async () => {
+		if (!newCommandName.trim() || !newCommandUrl.trim() || !selectedWorkspaceId) {
+			return;
+		}
+		setCommandActionMessage(null);
+		try {
+			const response = await axios.post<{ command: string; secret: string }>(
+				`${API_URL}/custom-commands`,
+				{
+					command: newCommandName.trim(),
+					targetUrl: newCommandUrl.trim(),
+					workspaceId: selectedWorkspaceId,
+				},
+			);
+			setNewCommandName('');
+			setNewCommandUrl('');
+			await loadCustomCommands(selectedWorkspaceId);
+			window.alert(
+				`/${response.data.command} registered.\n\nShared secret (shown once - copy it now to configure your target service):\n${response.data.secret}\n\nSend it in an "x-gws-command-token" header so the target can verify requests came from GWS Connect.`,
+			);
+		} catch (error) {
+			console.error('Add custom command error:', error);
+			const axiosError = error as { response?: { data?: { message?: string } } };
+			setCommandActionMessage(axiosError.response?.data?.message || 'Failed to add command');
+		}
+	};
+
+	const removeCustomCommand = async (commandId: string) => {
+		if (!selectedWorkspaceId) {
+			return;
+		}
+		try {
+			await axios.delete(`${API_URL}/custom-commands/${commandId}`, {
+				data: { workspaceId: selectedWorkspaceId },
+			});
+			await loadCustomCommands(selectedWorkspaceId);
+		} catch (error) {
+			console.error('Remove custom command error:', error);
+			const axiosError = error as { response?: { data?: { message?: string } } };
+			setCommandActionMessage(axiosError.response?.data?.message || 'Failed to remove command');
 		}
 	};
 
@@ -633,6 +699,72 @@ export default function AdminPanel() {
 										<button
 											type="button"
 											onClick={() => void removeWorkspaceMember(member.id)}
+											className="text-xs font-medium text-red-600 hover:underline dark:text-red-400"
+										>
+											Remove
+										</button>
+									</li>
+								))}
+							</ul>
+						</section>
+
+						<section className="mb-8 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900 sm:p-6">
+							<div className="min-w-0">
+								<h2 className="text-lg font-semibold text-gray-900 dark:text-white sm:text-2xl">
+									Custom Commands
+								</h2>
+								<p className="mt-2 max-w-3xl text-sm text-gray-600 dark:text-gray-300">
+									Register a <code>/command</code> for the selected workspace above. Typing it in a
+									channel POSTs to the target URL and posts the response back into the channel.
+								</p>
+								{commandActionMessage && (
+									<p className="mt-2 text-sm font-medium text-red-600 dark:text-red-400">
+										{commandActionMessage}
+									</p>
+								)}
+							</div>
+
+							<div className="mt-4 flex flex-col gap-2 sm:flex-row">
+								<input
+									type="text"
+									value={newCommandName}
+									onChange={(event) => setNewCommandName(event.target.value)}
+									placeholder="command (e.g. weather)"
+									className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-white sm:w-48"
+								/>
+								<input
+									type="text"
+									value={newCommandUrl}
+									onChange={(event) => setNewCommandUrl(event.target.value)}
+									placeholder="https://your-service.example.com/command"
+									className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-white"
+								/>
+								<button
+									type="button"
+									onClick={() => void addCustomCommand()}
+									className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-primary-700"
+								>
+									Add Command
+								</button>
+							</div>
+
+							<ul className="mt-4 divide-y divide-gray-100 dark:divide-gray-800">
+								{customCommands.length === 0 && (
+									<li className="py-2 text-sm text-gray-500 dark:text-gray-400">
+										No custom commands registered for this workspace.
+									</li>
+								)}
+								{customCommands.map((entry) => (
+									<li key={entry.id} className="flex items-center justify-between py-2">
+										<span className="min-w-0 text-sm text-gray-900 dark:text-white">
+											<span className="font-mono">/{entry.command}</span>
+											<span className="ml-2 truncate text-xs text-gray-500 dark:text-gray-400">
+												{entry.targetUrl}
+											</span>
+										</span>
+										<button
+											type="button"
+											onClick={() => void removeCustomCommand(entry.id)}
 											className="text-xs font-medium text-red-600 hover:underline dark:text-red-400"
 										>
 											Remove

@@ -341,6 +341,15 @@ export interface Workspace {
     memberRole?: string
 }
 
+export interface CustomCommand {
+    id: string
+    workspaceId: string
+    command: string
+    targetUrl: string
+    createdBy: string
+    createdAt?: string
+}
+
 export interface DirectMessage {
     id: string
     userId: string
@@ -433,6 +442,7 @@ interface ChatState {
     channels: Channel[]
     workspaces: Workspace[]
     activeWorkspaceId: string | null
+    customCommands: CustomCommand[]
     directMessages: DirectMessage[]
     groupChats: GroupChat[]
     voiceChannels: VoiceChannel[]
@@ -497,6 +507,8 @@ interface ChatState {
     loadWorkspaces: () => Promise<void>
     switchWorkspace: (workspaceId: string) => Promise<void>
     createWorkspace: (name: string) => Promise<{ ok: boolean; message?: string }>
+    loadCustomCommands: () => Promise<void>
+    executeCustomCommand: (command: string, args: string, channelId: string) => Promise<boolean>
     loadDirectConversations: () => Promise<void>
     loadChannelMessages: (channelId: string) => Promise<void>
     loadDirectMessages: (userId: string) => Promise<void>
@@ -513,6 +525,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     channels: [],
     workspaces: [],
     activeWorkspaceId: null,
+    customCommands: [],
     directMessages: [],
     groupChats: [],
     voiceChannels: [],
@@ -689,6 +702,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // the persisted value in sync with it for the next reconnect.
             set({ workspaces: payload.workspaces, activeWorkspaceId: payload.activeWorkspaceId })
             persistActiveWorkspaceId(payload.activeWorkspaceId)
+            void get().loadCustomCommands()
         })
 
         socket.on('channels', (channels: Channel[]) => {
@@ -2045,7 +2059,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ activeWorkspaceId: workspaceId, activeChannel: null })
         persistActiveWorkspaceId(workspaceId)
         clearPersistedActiveChat()
-        await Promise.all([get().loadChannels(), get().loadVoiceChannels()])
+        await Promise.all([get().loadChannels(), get().loadVoiceChannels(), get().loadCustomCommands()])
     },
 
     createWorkspace: async (name) => {
@@ -2058,6 +2072,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
             console.error('Error creating workspace:', error)
             const axiosError = error as { response?: { data?: { message?: string } } }
             return { ok: false, message: axiosError.response?.data?.message || 'Failed to create workspace' }
+        }
+    },
+
+    loadCustomCommands: async () => {
+        try {
+            const { activeWorkspaceId } = get()
+            if (!activeWorkspaceId) {
+                set({ customCommands: [] })
+                return
+            }
+            const response = await axios.get(`${API_URL}/custom-commands`, {
+                params: { workspaceId: activeWorkspaceId },
+            })
+            set({ customCommands: response.data })
+        } catch (error) {
+            console.error('Error loading custom commands:', error)
+        }
+    },
+
+    executeCustomCommand: async (command, args, channelId) => {
+        const { activeWorkspaceId } = get()
+        try {
+            await axios.post(`${API_URL}/custom-commands/execute`, {
+                command,
+                args,
+                channelId,
+                workspaceId: activeWorkspaceId,
+            })
+            return true
+        } catch (error) {
+            console.error('Error executing custom command:', error)
+            const axiosError = error as { response?: { data?: { message?: string } } }
+            useNotificationStore.getState().addToast({
+                id: `custom-command-error-${Date.now()}`,
+                title: `/${command} failed`,
+                body: axiosError.response?.data?.message || 'The command did not respond successfully.',
+            })
+            return false
         }
     },
 

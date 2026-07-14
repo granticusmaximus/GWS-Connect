@@ -39,6 +39,15 @@ export const createWorkspace = (name, createdBy) => {
 	return findWorkspaceById(workspaceId);
 };
 
+// The instance's original workspace (created by the 1.1 migration backfill,
+// or the first one an admin creates on a fresh install). New self-registered
+// users are auto-joined to this one as a plain member - there's no
+// workspace-picker in the signup flow, so without this they'd end up in no
+// workspace at all (which the rest of the app treats as "no scoping",
+// silently leaking every workspace's channels to them).
+export const findEarliestWorkspace = () =>
+	db.prepare('SELECT * FROM workspaces ORDER BY createdAt ASC, id ASC LIMIT 1').get() || null;
+
 export const findWorkspaceById = (id) => {
 	return db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id);
 };

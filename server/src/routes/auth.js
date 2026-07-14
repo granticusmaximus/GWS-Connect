@@ -21,6 +21,7 @@ import {
 	revokeSession,
 } from '../models/Session.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { addWorkspaceMember, findEarliestWorkspace } from '../models/Workspace.js';
 
 const router = express.Router();
 const getJwtSecret = () => {
@@ -191,6 +192,14 @@ router.post(
 				e2eeSalt,
 				e2eeIv,
 			);
+
+			// New signups don't go through a workspace picker/invite here, so
+			// auto-join the instance's original workspace as a plain member -
+			// otherwise they'd belong to no workspace at all.
+			const earliestWorkspace = findEarliestWorkspace();
+			if (earliestWorkspace) {
+				addWorkspaceMember(earliestWorkspace.id, userId, 'user');
+			}
 
 			// Retrieve full user object
 			const { findUserById } = await import('../models/User.js');
