@@ -537,7 +537,7 @@ export default function MessageInput({
     // unrecognized "/whatever" still sends as plain literal text exactly as
     // it always has.
     const customCommandMatch = channelId ? message.trim().match(/^\/([a-z0-9-]+)(?:\s+([\s\S]*))?$/i) : null
-    if (customCommandMatch) {
+    if (customCommandMatch && channelId) {
       const [, commandName, args] = customCommandMatch
       const isRegistered = customCommands.some(
         (entry) => entry.command.toLowerCase() === commandName.toLowerCase(),
