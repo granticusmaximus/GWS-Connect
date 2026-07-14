@@ -6,6 +6,7 @@ services:
       - ./server/.env
     environment:
       PORT: 5176
+      DB_PATH: /app/data/gws-connect.db
       CLIENT_URL: "http://localhost:5157,https://connect.gwsapp.net"
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
