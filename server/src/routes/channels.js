@@ -16,21 +16,12 @@ import {
 	markChannelVisited,
 	rotateChannelKey,
 } from '../models/Channel.js';
-import { getDefaultWorkspaceForUser, isWorkspaceMember } from '../models/Workspace.js';
+import { resolveActiveWorkspaceId } from '../models/Workspace.js';
 
 const router = express.Router();
 
-// Resolves the workspace a channel-list/create request applies to: an
-// explicit ?workspaceId (or body.workspaceId) if the requester actually
-// belongs to it, otherwise the user's first/default workspace. Returns
-// null only for users with no workspace membership at all.
-const resolveRequestWorkspaceId = (req) => {
-	const requested = req.query.workspaceId || req.body?.workspaceId;
-	if (requested && isWorkspaceMember(requested, req.user.id)) {
-		return requested;
-	}
-	return getDefaultWorkspaceForUser(req.user.id)?.id ?? null;
-};
+const resolveRequestWorkspaceId = (req) =>
+	resolveActiveWorkspaceId(req.user.id, req.query.workspaceId || req.body?.workspaceId);
 
 // Get all channels (approved only for regular users) within the caller's
 // active workspace.

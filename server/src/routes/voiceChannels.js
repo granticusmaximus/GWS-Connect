@@ -3,14 +3,18 @@ import { authenticateToken } from '../middleware/auth.js';
 import { getUserRole } from '../middleware/roles.js';
 import { listVoiceChannelsForUser } from '../models/VoiceChannel.js';
 import { findUserById } from '../models/User.js';
+import { resolveActiveWorkspaceId } from '../models/Workspace.js';
 
 const router = express.Router();
 
 router.get('/', authenticateToken, (req, res) => {
 	try {
+		const workspaceId = resolveActiveWorkspaceId(req.user.id, req.query.workspaceId);
+
 		const voiceChannels = listVoiceChannelsForUser(
 			req.user.id,
 			getUserRole(req.user.id),
+			workspaceId,
 		);
 		const callSessions = req.app.get('callSessions') || new Map();
 

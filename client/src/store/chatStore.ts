@@ -7,6 +7,7 @@ import type { MessageMention } from '../utils/mentions'
 import { useAuthStore } from './authStore'
 import { useNotificationStore, type InAppNotification } from './notificationStore'
 const ACTIVE_CHAT_STORAGE_KEY = 'gws-connect.active-chat'
+const ACTIVE_WORKSPACE_STORAGE_KEY = 'gws-connect.active-workspace'
 const TYPING_INDICATOR_TIMEOUT_MS = 3200
 
 const typingIndicatorTimeouts = new Map<string, number>()
@@ -533,7 +534,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         get().socket?.disconnect()
 
         const socket = io(SOCKET_URL, {
-            auth: { token }
+            auth: { token, workspaceId: readPersistedActiveWorkspaceId() }
         })
 
         socket.on('connect', () => {
@@ -682,7 +683,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         })
 
         socket.on('workspaces', (payload: { workspaces: Workspace[]; activeWorkspaceId: string | null }) => {
+            // The server already honors the workspaceId we sent in the
+            // connection handshake (falling back to the user's default if it
+            // wasn't valid), so its answer is authoritative here - just keep
+            // the persisted value in sync with it for the next reconnect.
             set({ workspaces: payload.workspaces, activeWorkspaceId: payload.activeWorkspaceId })
+            persistActiveWorkspaceId(payload.activeWorkspaceId)
         })
 
         socket.on('channels', (channels: Channel[]) => {
@@ -2020,14 +2026,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const response = await axios.get(`${API_URL}/workspaces`)
             const workspaces: Workspace[] = response.data
             const { activeWorkspaceId } = get()
-            const stillValid = activeWorkspaceId
-                ? workspaces.some((workspace) => workspace.id === activeWorkspaceId)
-                : false
+            const persisted = readPersistedActiveWorkspaceId()
+            const fallback = [activeWorkspaceId, persisted, workspaces[0]?.id ?? null].find(
+                (candidate) => candidate && workspaces.some((workspace) => workspace.id === candidate),
+            )
 
-            set({
-                workspaces,
-                activeWorkspaceId: stillValid ? activeWorkspaceId : workspaces[0]?.id ?? null,
-            })
+            set({ workspaces, activeWorkspaceId: fallback ?? null })
+            persistActiveWorkspaceId(fallback ?? null)
         } catch (error) {
             console.error('Error loading workspaces:', error)
         }
@@ -2038,8 +2043,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             return
         }
         set({ activeWorkspaceId: workspaceId, activeChannel: null })
+        persistActiveWorkspaceId(workspaceId)
         clearPersistedActiveChat()
-        await get().loadChannels()
+        await Promise.all([get().loadChannels(), get().loadVoiceChannels()])
     },
 
     createWorkspace: async (name) => {
@@ -2268,7 +2274,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     loadVoiceChannels: async () => {
         try {
-            const response = await axios.get(`${API_URL}/voice-channels`)
+            const { activeWorkspaceId } = get()
+            const response = await axios.get(`${API_URL}/voice-channels`, {
+                params: activeWorkspaceId ? { workspaceId: activeWorkspaceId } : undefined,
+            })
             set({
                 voiceChannels: Array.isArray(response.data)
                     ? response.data.map(normalizeVoiceChannel)
@@ -2948,4 +2957,43 @@ const persistActiveChat = ({ type, id }: Omit<PersistedActiveChat, 'userId'>) =>
 const clearPersistedActiveChat = () => {
     if (typeof window === 'undefined') return
     sessionStorage.removeItem(ACTIVE_CHAT_STORAGE_KEY)
+}
+
+// Keyed per-user so switching accounts in the same browser session doesn't
+// leak one user's last-active workspace into another's.
+const readPersistedActiveWorkspaceId = (): string | null => {
+    if (typeof window === 'undefined') return null
+
+    const activeUserId = useAuthStore.getState().user?.id
+    if (!activeUserId) return null
+
+    const rawValue = sessionStorage.getItem(ACTIVE_WORKSPACE_STORAGE_KEY)
+    if (!rawValue) return null
+
+    try {
+        const parsed = JSON.parse(rawValue) as { userId?: string; workspaceId?: string }
+        if (parsed?.userId !== String(activeUserId) || !parsed?.workspaceId) {
+            return null
+        }
+        return parsed.workspaceId
+    } catch {
+        return null
+    }
+}
+
+const persistActiveWorkspaceId = (workspaceId: string | null) => {
+    if (typeof window === 'undefined') return
+
+    const activeUserId = useAuthStore.getState().user?.id
+    if (!activeUserId) return
+
+    if (!workspaceId) {
+        sessionStorage.removeItem(ACTIVE_WORKSPACE_STORAGE_KEY)
+        return
+    }
+
+    sessionStorage.setItem(ACTIVE_WORKSPACE_STORAGE_KEY, JSON.stringify({
+        userId: String(activeUserId),
+        workspaceId,
+    }))
 }

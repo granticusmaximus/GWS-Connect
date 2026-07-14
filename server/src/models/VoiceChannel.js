@@ -8,9 +8,9 @@ const syncVoiceChannels = () => {
 	).run();
 };
 
-export const listVoiceChannelsForUser = (userId, role) => {
+export const listVoiceChannelsForUser = (userId, role, workspaceId = null) => {
 	syncVoiceChannels();
-	const visibleChannels = findVisibleChannelsForUser(userId, role);
+	const visibleChannels = findVisibleChannelsForUser(userId, role, workspaceId);
 
 	if (visibleChannels.length === 0) {
 		return [];

@@ -32,7 +32,7 @@ import workspaceRoutes from './routes/workspaces.js';
 import { authenticateSocket } from './middleware/auth.js';
 import { canSendMessage, getUserRole } from './middleware/roles.js';
 import { canAccessChannel } from './models/Channel.js';
-import { getDefaultWorkspaceForUser, listWorkspacesForUser } from './models/Workspace.js';
+import { listWorkspacesForUser, resolveActiveWorkspaceId } from './models/Workspace.js';
 import { canAccessGroupChat, findGroupChatsForUser } from './models/GroupChat.js';
 import { findVoiceChannelById } from './models/VoiceChannel.js';
 import {
@@ -461,19 +461,21 @@ io.on('connection', async (socket) => {
 	// Join user's personal room
 	socket.join(String(socket.user.id));
 
-	// Load and send available channels, scoped to the user's default workspace
+	// Load and send available channels, scoped to whichever workspace the
+	// client asked for in its connection handshake (falling back to the
+	// user's default workspace if that one is missing/no longer valid) so a
+	// reconnect doesn't silently snap the user back to their oldest workspace.
 	try {
 		const { findVisibleChannelsForUser } = await import('./models/Channel.js');
 		const userRole = getUserRole(socket.user.id);
 		const workspaces = listWorkspacesForUser(socket.user.id);
-		const activeWorkspace = getDefaultWorkspaceForUser(socket.user.id);
-		socket.emit('workspaces', { workspaces, activeWorkspaceId: activeWorkspace?.id ?? null });
-
-		const channels = findVisibleChannelsForUser(
+		const activeWorkspaceId = resolveActiveWorkspaceId(
 			socket.user.id,
-			userRole,
-			activeWorkspace?.id ?? null,
+			socket.handshake.auth?.workspaceId,
 		);
+		socket.emit('workspaces', { workspaces, activeWorkspaceId });
+
+		const channels = findVisibleChannelsForUser(socket.user.id, userRole, activeWorkspaceId);
 		socket.emit('channels', channels);
 
 		// Auto-join general channel if it exists

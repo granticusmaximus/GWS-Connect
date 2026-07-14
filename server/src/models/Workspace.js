@@ -104,3 +104,14 @@ export const getDefaultWorkspaceForUser = (userId) => {
 	const workspaces = listWorkspacesForUser(userId);
 	return workspaces[0] || null;
 };
+
+// Resolves which workspace a request applies to: an explicit id the caller
+// actually belongs to, otherwise their default workspace. Shared by every
+// route that scopes a list (channels, voice channels, ...) by workspace so
+// the fallback rule can't drift between them.
+export const resolveActiveWorkspaceId = (userId, requestedWorkspaceId) => {
+	if (requestedWorkspaceId && isWorkspaceMember(requestedWorkspaceId, userId)) {
+		return requestedWorkspaceId;
+	}
+	return getDefaultWorkspaceForUser(userId)?.id ?? null;
+};

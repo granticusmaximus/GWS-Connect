@@ -399,31 +399,10 @@ export default function Sidebar({ isMobileOpen = false, onClose, onChatSelect }:
             )
           })}
 
-          {!sidebarLoading && channels.length === 0 && (
-            <>
-              <button
-                onClick={() => handleChannelSelect('general')}
-                className={`w-full flex items-center space-x-2 px-3 py-2 rounded-lg transition-colors ${
-                  activeChannel === 'general'
-                    ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
-                    : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
-                }`}
-              >
-                <HashtagIcon className="w-5 h-5" />
-                <span className="text-sm font-medium">general</span>
-              </button>
-              <button
-                onClick={() => handleChannelSelect('random')}
-                className={`w-full flex items-center space-x-2 px-3 py-2 rounded-lg transition-colors ${
-                  activeChannel === 'random'
-                    ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400'
-                    : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
-                }`}
-              >
-                <HashtagIcon className="w-5 h-5" />
-                <span className="text-sm font-medium">random</span>
-              </button>
-            </>
+          {!sidebarLoading && channels.length === 0 && uncategorizedChannels.length === 0 && (
+            <div className="text-sm text-gray-500 dark:text-gray-400 text-center py-2">
+              No channels yet
+            </div>
           )}
         </div>
       </div>
