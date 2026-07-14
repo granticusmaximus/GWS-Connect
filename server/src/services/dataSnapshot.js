@@ -12,7 +12,7 @@ import {
 } from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import tar from 'tar';
+import { c as tarCreate, x as tarExtract } from 'tar';
 import { getDatabasePath, reloadDatabase } from '../database.js';
 
 const DEFAULT_BUNDLE_NAME = 'gws-connect-data-snapshot.tar.gz';
@@ -108,7 +108,7 @@ export const buildDataSnapshotBundle = async ({
 	await copyDirectoryContents(getUploadsDirectory(), uploadsDir);
 	await mkdir(payloadRoot, { recursive: true });
 	await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
-	await tar.c({ gzip: true, file: bundlePath, cwd: payloadRoot }, [
+	await tarCreate({ gzip: true, file: bundlePath, cwd: payloadRoot }, [
 		'manifest.json',
 		'database',
 		'uploads',
@@ -155,7 +155,7 @@ export const applyDataSnapshotBundle = async ({ bundlePath }) => {
 	const replacementDbPath = `${liveDbPath}.next`;
 
 	try {
-		await tar.x({ file: bundlePath, cwd: workspaceRoot });
+		await tarExtract({ file: bundlePath, cwd: workspaceRoot });
 
 		const manifest = await safeReadJson(manifestPath);
 		if (!manifest || manifest.bundleType !== 'gws-connect-data-snapshot') {
