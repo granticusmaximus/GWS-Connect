@@ -50,6 +50,7 @@ import { broadcastPresenceState } from './services/presence.js';
 import { sendErrorNotification } from './services/errorReporter.js';
 import { startScheduledMessageDispatcher } from './services/scheduledDispatcher.js';
 import { isDataSyncInProgress } from './services/syncState.js';
+import { mintLiveKitToken, toLiveKitRoomName } from './services/livekit.js';
 import { logSocketError, errorLoggingMiddleware } from './utils/logger.js';
 
 dotenv.config();
@@ -1803,7 +1804,19 @@ io.on('connection', async (socket) => {
 				emitVoiceChannelPresence(chatId);
 			}
 
-			callback?.({ ok: true, callId, participants: existingParticipants });
+			const livekitToken = await mintLiveKitToken({
+				roomName: toLiveKitRoomName(callId),
+				userId: socket.user.id,
+				username: socket.user.username,
+			});
+
+			callback?.({
+				ok: true,
+				callId,
+				participants: existingParticipants,
+				livekitUrl: process.env.LIVEKIT_URL,
+				livekitToken,
+			});
 		} catch (error) {
 			await logSocketError(error, {
 				file: 'index.js',
@@ -1816,17 +1829,6 @@ io.on('connection', async (socket) => {
 			});
 			callback?.({ ok: false, message: 'Failed to join call' });
 		}
-	});
-
-	socket.on('call:signal', (data) => {
-		const { callId, toUserId, signal } = data || {};
-		if (!callId || !toUserId || !signal) return;
-
-		io.to(String(toUserId)).emit('call:signal', {
-			callId,
-			fromUserId: String(socket.user.id),
-			signal,
-		});
 	});
 
 	socket.on('call:leave', (data) => {
