@@ -1,5 +1,6 @@
 import db from '../database.js';
 import { getUserRoleInWorkspace } from '../models/Workspace.js';
+import { checkMessageRateLimit } from '../services/rateLimit.js';
 
 // Check if user is admin
 export const requireAdmin = (req, res, next) => {
@@ -137,6 +138,15 @@ export const canSendMessage = (channelId, userId) => {
 	const slowModeResult = checkSlowMode(channelId, userId);
 	if (!slowModeResult.allowed) {
 		return slowModeResult;
+	}
+
+	// Global anti-spam guard, independent of any single channel's slow mode -
+	// admins are exempt, same as slow mode's exemption above.
+	if (getUserRole(userId) !== 'admin') {
+		const rateLimitResult = checkMessageRateLimit(userId);
+		if (!rateLimitResult.allowed) {
+			return rateLimitResult;
+		}
 	}
 
 	return { allowed: true };
