@@ -1,6 +1,6 @@
 import { create } from 'zustand'
+import { Room, RoomEvent, Track, type RemoteParticipant, type RemoteTrack, type RemoteTrackPublication } from 'livekit-client'
 import { useChatStore } from './chatStore'
-import { WEBRTC_ICE_SERVERS } from '../config/runtime'
 
 export interface CallParticipant {
     userId: string
@@ -15,11 +15,6 @@ export interface IncomingCall {
     fromUserId: string
     fromUsername: string
     withVideo: boolean
-}
-
-interface PeerEntry {
-    pc: RTCPeerConnection
-    username: string
 }
 
 interface CallState {
@@ -43,10 +38,16 @@ interface CallState {
     registerSocketListeners: () => void
 }
 
-const peers = new Map<string, PeerEntry>()
-const pendingIceCandidates = new Map<string, RTCIceCandidateInit[]>()
-let screenTrack: MediaStreamTrack | null = null
-let cameraTrack: MediaStreamTrack | null = null
+interface CallJoinResponse {
+    ok: boolean
+    callId?: string
+    participants?: Array<{ userId: string; username: string }>
+    livekitUrl?: string
+    livekitToken?: string
+    message?: string
+}
+
+let liveKitRoom: Room | null = null
 let boundSocket: ReturnType<typeof useChatStore.getState>['socket'] = null
 const callDebugEnabled = import.meta.env.DEV || import.meta.env.VITE_CALL_DEBUG === 'true'
 
@@ -60,100 +61,33 @@ const logCallDebug = (...args: unknown[]) => {
 
 const getSocket = () => useChatStore.getState().socket
 
-const closeAllPeers = () => {
-    peers.forEach(({ pc }) => pc.close())
-    peers.clear()
-    pendingIceCandidates.clear()
+// LiveKit gives us per-track RemoteTrack objects rather than a single
+// MediaStream per participant - rebuild one so CallBar's existing
+// <video srcObject> tiles don't need to know anything changed underneath.
+const streamsByParticipant = new Map<string, MediaStream>()
+
+const getOrCreateParticipantStream = (identity: string) => {
+    let stream = streamsByParticipant.get(identity)
+    if (!stream) {
+        stream = new MediaStream()
+        streamsByParticipant.set(identity, stream)
+    }
+    return stream
 }
 
-const queueIceCandidate = (userId: string, candidate: RTCIceCandidateInit) => {
-    const queued = pendingIceCandidates.get(userId) || []
-    queued.push(candidate)
-    pendingIceCandidates.set(userId, queued)
+const buildLocalStream = (room: Room) => {
+    const stream = new MediaStream()
+    const micTrack = room.localParticipant.getTrackPublication(Track.Source.Microphone)?.track
+    const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track
+    if (micTrack?.mediaStreamTrack) stream.addTrack(micTrack.mediaStreamTrack)
+    if (camTrack?.mediaStreamTrack) stream.addTrack(camTrack.mediaStreamTrack)
+    return stream
 }
 
-const flushQueuedIceCandidates = async (userId: string, pc: RTCPeerConnection) => {
-    const queued = pendingIceCandidates.get(userId)
-    if (!queued || queued.length === 0) {
-        return
-    }
-
-    for (const candidate of queued) {
-        try {
-            await pc.addIceCandidate(candidate)
-        } catch (error) {
-            console.error('Failed to add queued ICE candidate:', error)
-        }
-    }
-
-    pendingIceCandidates.delete(userId)
-}
-
-const createPeerConnection = (
-    toUserId: string,
-    username: string,
-    localStream: MediaStream | null,
-    callId: string,
-    onTrack: (stream: MediaStream) => void,
-) => {
-    const pc = new RTCPeerConnection({ iceServers: WEBRTC_ICE_SERVERS })
-    logCallDebug('create-peer', { toUserId, callId, iceServers: WEBRTC_ICE_SERVERS })
-
-    if (localStream) {
-        localStream.getTracks().forEach((track) => pc.addTrack(track, localStream))
-    }
-
-    pc.onicecandidate = (event) => {
-        if (event.candidate) {
-            logCallDebug('local-ice-candidate', {
-                toUserId,
-                callId,
-                candidateType: event.candidate.type,
-                protocol: event.candidate.protocol,
-            })
-            getSocket()?.emit('call:signal', {
-                callId,
-                toUserId,
-                signal: { type: 'candidate', candidate: event.candidate.toJSON() },
-            })
-        }
-    }
-
-    pc.ontrack = (event) => {
-        logCallDebug('remote-track', {
-            fromUserId: toUserId,
-            callId,
-            tracks: event.streams[0]?.getTracks().map((track) => track.kind),
-        })
-        onTrack(event.streams[0])
-    }
-
-    pc.onconnectionstatechange = () => {
-        logCallDebug('connection-state', {
-            toUserId,
-            callId,
-            connectionState: pc.connectionState,
-        })
-    }
-
-    pc.oniceconnectionstatechange = () => {
-        logCallDebug('ice-connection-state', {
-            toUserId,
-            callId,
-            iceConnectionState: pc.iceConnectionState,
-        })
-    }
-
-    pc.onsignalingstatechange = () => {
-        logCallDebug('signaling-state', {
-            toUserId,
-            callId,
-            signalingState: pc.signalingState,
-        })
-    }
-
-    peers.set(toUserId, { pc, username })
-    return pc
+const teardownRoom = () => {
+    liveKitRoom?.removeAllListeners()
+    liveKitRoom = null
+    streamsByParticipant.clear()
 }
 
 export const useCallStore = create<CallState>((set, get) => ({
@@ -182,67 +116,106 @@ export const useCallStore = create<CallState>((set, get) => ({
         set({ isConnecting: true })
 
         try {
-            const localStream = await navigator.mediaDevices.getUserMedia({
-                audio: true,
-                video: withVideo,
+            const response = await new Promise<CallJoinResponse>((resolve) => {
+                socket.emit('call:join', { chatType, chatId, withVideo }, resolve)
             })
-            cameraTrack = localStream.getVideoTracks()[0] || null
-            if (cameraTrack) {
-                cameraTrack.enabled = withVideo
+
+            if (!response?.ok || !response.callId || !response.livekitUrl || !response.livekitToken) {
+                console.error('Failed to join call:', response?.message)
+                set({ isConnecting: false })
+                return
             }
 
-            socket.emit(
-                'call:join',
-                { chatType, chatId, withVideo },
-                (response: { ok: boolean; callId?: string; participants?: Array<{ userId: string; username: string }>; message?: string }) => {
-                    if (!response?.ok || !response.callId) {
-                        console.error('Failed to join call:', response?.message)
-                        localStream.getTracks().forEach((track) => track.stop())
-                        set({ isConnecting: false })
-                        return
-                    }
+            const { callId, livekitUrl, livekitToken } = response
+            const room = new Room()
+            liveKitRoom = room
 
-                    const callId = response.callId
-                    set({
-                        activeCallId: callId,
-                        activeChatType: chatType,
-                        activeChatId: chatId,
-                        localStream,
-                        isCameraOff: !withVideo,
-                        isConnecting: false,
-                        participants: {},
-                    })
+            const upsertParticipant = (userId: string, username: string) => {
+                set((state) => ({
+                    participants: {
+                        ...state.participants,
+                        [userId]: state.participants[userId]
+                            ? { ...state.participants[userId], username }
+                            : { userId, username, stream: null },
+                    },
+                }))
+            }
 
-                    response.participants?.forEach(({ userId, username }) => {
-                        const pc = createPeerConnection(userId, username, localStream, callId, (stream) => {
-                            set((state) => ({
-                                participants: {
-                                    ...state.participants,
-                                    [userId]: { userId, username, stream },
-                                },
-                            }))
-                        })
+            room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
+                logCallDebug('participant-connected', { identity: participant.identity })
+                upsertParticipant(participant.identity, participant.name || participant.identity)
+            })
 
-                        set((state) => ({
-                            participants: {
-                                ...state.participants,
-                                [userId]: state.participants[userId] || { userId, username, stream: null },
+            room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
+                logCallDebug('participant-disconnected', { identity: participant.identity })
+                streamsByParticipant.delete(participant.identity)
+                set((state) => {
+                    const nextParticipants = { ...state.participants }
+                    delete nextParticipants[participant.identity]
+                    return { participants: nextParticipants }
+                })
+            })
+
+            room.on(
+                RoomEvent.TrackSubscribed,
+                (track: RemoteTrack, _publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+                    logCallDebug('track-subscribed', { identity: participant.identity, kind: track.kind })
+                    const stream = getOrCreateParticipantStream(participant.identity)
+                    stream.addTrack(track.mediaStreamTrack)
+                    set((state) => ({
+                        participants: {
+                            ...state.participants,
+                            [participant.identity]: {
+                                userId: participant.identity,
+                                username: participant.name || participant.identity,
+                                stream,
                             },
-                        }))
-
-                        void pc.createOffer().then(async (offer) => {
-                            await pc.setLocalDescription(offer)
-                            socket.emit('call:signal', {
-                                callId,
-                                toUserId: userId,
-                                signal: { type: 'offer', sdp: offer.sdp },
-                            })
-                        })
-                    })
+                        },
+                    }))
                 },
             )
+
+            room.on(
+                RoomEvent.TrackUnsubscribed,
+                (track: RemoteTrack, _publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+                    logCallDebug('track-unsubscribed', { identity: participant.identity, kind: track.kind })
+                    streamsByParticipant.get(participant.identity)?.removeTrack(track.mediaStreamTrack)
+                },
+            )
+
+            room.on(RoomEvent.Disconnected, () => {
+                logCallDebug('room-disconnected')
+                if (get().activeCallId === callId) {
+                    get().leaveCall()
+                }
+            })
+
+            await room.connect(livekitUrl, livekitToken)
+            await room.localParticipant.setMicrophoneEnabled(true)
+            if (withVideo) {
+                await room.localParticipant.setCameraEnabled(true)
+            }
+
+            const localStream = buildLocalStream(room)
+
+            set({
+                activeCallId: callId,
+                activeChatType: chatType,
+                activeChatId: chatId,
+                localStream,
+                isCameraOff: !withVideo,
+                isConnecting: false,
+                participants: {},
+            })
+
+            // Seed placeholders from our own session bookkeeping (participants
+            // who joined via the socket call:join room before us) so tiles
+            // show up immediately - LiveKit's TrackSubscribed events fill in
+            // the actual stream for each as they arrive.
+            response.participants?.forEach(({ userId, username }) => upsertParticipant(userId, username))
         } catch (error) {
             console.error('Failed to start call:', error)
+            teardownRoom()
             set({ isConnecting: false })
         }
     },
@@ -262,16 +235,13 @@ export const useCallStore = create<CallState>((set, get) => ({
     },
 
     leaveCall: () => {
-        const { activeCallId, localStream } = get()
+        const { activeCallId } = get()
         if (activeCallId) {
             getSocket()?.emit('call:leave', { callId: activeCallId })
         }
 
-        localStream?.getTracks().forEach((track) => track.stop())
-        screenTrack?.stop()
-        screenTrack = null
-        cameraTrack = null
-        closeAllPeers()
+        void liveKitRoom?.disconnect()
+        teardownRoom()
 
         set({
             activeCallId: null,
@@ -286,53 +256,26 @@ export const useCallStore = create<CallState>((set, get) => ({
     },
 
     toggleMute: () => {
-        const { localStream, isMuted } = get()
-        localStream?.getAudioTracks().forEach((track) => {
-            track.enabled = isMuted
-        })
+        const { isMuted } = get()
+        void liveKitRoom?.localParticipant.setMicrophoneEnabled(isMuted)
         set({ isMuted: !isMuted })
     },
 
     toggleCamera: () => {
         const { isCameraOff } = get()
-        if (cameraTrack) {
-            cameraTrack.enabled = isCameraOff
-        }
+        void liveKitRoom?.localParticipant.setCameraEnabled(isCameraOff)
         set({ isCameraOff: !isCameraOff })
     },
 
     toggleScreenShare: async () => {
         const { isScreenSharing, activeCallId } = get()
-        if (!activeCallId) return
-
-        if (isScreenSharing) {
-            screenTrack?.stop()
-            screenTrack = null
-            if (cameraTrack) {
-                peers.forEach(({ pc }) => {
-                    const sender = pc.getSenders().find((s) => s.track?.kind === 'video')
-                    void sender?.replaceTrack(cameraTrack as MediaStreamTrack)
-                })
-            }
-            set({ isScreenSharing: false })
-            return
-        }
+        if (!activeCallId || !liveKitRoom) return
 
         try {
-            const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true })
-            screenTrack = displayStream.getVideoTracks()[0] || null
-            if (screenTrack) {
-                peers.forEach(({ pc }) => {
-                    const sender = pc.getSenders().find((s) => s.track?.kind === 'video')
-                    void sender?.replaceTrack(screenTrack as MediaStreamTrack)
-                })
-                screenTrack.onended = () => {
-                    void get().toggleScreenShare()
-                }
-            }
-            set({ isScreenSharing: true })
+            await liveKitRoom.localParticipant.setScreenShareEnabled(!isScreenSharing)
+            set({ isScreenSharing: !isScreenSharing })
         } catch (error) {
-            console.error('Failed to start screen share:', error)
+            console.error('Failed to toggle screen share:', error)
         }
     },
 
@@ -348,94 +291,6 @@ export const useCallStore = create<CallState>((set, get) => ({
 
         socket.on('call:declined', () => {
             set({ incomingCall: null })
-        })
-
-        socket.on('call:peer-joined', (payload: { callId: string; userId: string; username: string }) => {
-            const { activeCallId, localStream } = get()
-            if (!activeCallId || activeCallId !== payload.callId) return
-            if (peers.has(payload.userId)) return
-
-            set((state) => ({
-                participants: {
-                    ...state.participants,
-                    [payload.userId]: { userId: payload.userId, username: payload.username, stream: null },
-                },
-            }))
-
-            createPeerConnection(payload.userId, payload.username, localStream, activeCallId, (stream) => {
-                set((state) => ({
-                    participants: {
-                        ...state.participants,
-                        [payload.userId]: { userId: payload.userId, username: payload.username, stream },
-                    },
-                }))
-            })
-        })
-
-        socket.on('call:signal', async (payload: { callId: string; fromUserId: string; signal: { type: string; sdp?: string; candidate?: RTCIceCandidateInit } }) => {
-            const { activeCallId, localStream } = get()
-            if (!activeCallId || activeCallId !== payload.callId) return
-
-            let entry = peers.get(payload.fromUserId)
-
-            if (payload.signal.type === 'offer' && payload.signal.sdp) {
-                if (!entry) {
-                    const username = get().participants[payload.fromUserId]?.username || 'Unknown'
-                    const pc = createPeerConnection(payload.fromUserId, username, localStream, activeCallId, (stream) => {
-                        set((state) => ({
-                            participants: {
-                                ...state.participants,
-                                [payload.fromUserId]: { userId: payload.fromUserId, username, stream },
-                            },
-                        }))
-                    })
-                    entry = { pc, username }
-                }
-
-                await entry.pc.setRemoteDescription({ type: 'offer', sdp: payload.signal.sdp })
-                await flushQueuedIceCandidates(payload.fromUserId, entry.pc)
-                const answer = await entry.pc.createAnswer()
-                await entry.pc.setLocalDescription(answer)
-                getSocket()?.emit('call:signal', {
-                    callId: activeCallId,
-                    toUserId: payload.fromUserId,
-                    signal: { type: 'answer', sdp: answer.sdp },
-                })
-            } else if (payload.signal.type === 'answer' && payload.signal.sdp && entry) {
-                await entry.pc.setRemoteDescription({ type: 'answer', sdp: payload.signal.sdp })
-                await flushQueuedIceCandidates(payload.fromUserId, entry.pc)
-            } else if (payload.signal.type === 'candidate' && payload.signal.candidate) {
-                if (!entry) {
-                    queueIceCandidate(payload.fromUserId, payload.signal.candidate)
-                    return
-                }
-
-                if (!entry.pc.remoteDescription) {
-                    queueIceCandidate(payload.fromUserId, payload.signal.candidate)
-                    return
-                }
-
-                try {
-                    await entry.pc.addIceCandidate(payload.signal.candidate)
-                } catch (error) {
-                    console.error('Failed to add ICE candidate:', error)
-                }
-            }
-        })
-
-        socket.on('call:peer-left', (payload: { callId: string; userId: string }) => {
-            const { activeCallId } = get()
-            if (!activeCallId || activeCallId !== payload.callId) return
-
-            peers.get(payload.userId)?.pc.close()
-            peers.delete(payload.userId)
-            pendingIceCandidates.delete(payload.userId)
-
-            set((state) => {
-                const nextParticipants = { ...state.participants }
-                delete nextParticipants[payload.userId]
-                return { participants: nextParticipants }
-            })
         })
     },
 }))

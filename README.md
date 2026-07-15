@@ -6,7 +6,7 @@ A privacy-first instant messaging application similar to Discord and Slack. Buil
 
 - 🔐 **Authentication** - JWT-based login/registration with account lockout after repeated failed attempts
 - 💬 **Real-time Chat** - Channels, direct messages, threaded replies, reactions, mentions, polls
-- 🎥 **Audio/Video Calls** - Mesh WebRTC voice/video calls and screen sharing in channels and DMs
+- 🎥 **Audio/Video Calls** - SFU-based (LiveKit) voice/video calls and screen sharing in channels, DMs, and group chats
 - 📌 **Pinned Messages & Search** - Pin important messages per conversation; search message history
 - 🟢 **Presence** - Online/idle status indicators
 - 📎 **File Sharing** - Drag-and-drop file uploads for all media types
@@ -23,7 +23,7 @@ A privacy-first instant messaging application similar to Discord and Slack. Buil
 - Tailwind CSS for styling
 - Zustand for state management
 - Socket.io-client for real-time communication
-- Native WebRTC (`RTCPeerConnection`) for audio/video calls
+- LiveKit (`livekit-client`) for SFU-based audio/video calls
 - React Dropzone for file uploads
 - React Router for navigation
 
@@ -59,10 +59,6 @@ Note: the server uses `better-sqlite3` (native module). If your Node version cha
    ```
    VITE_API_URL=/api
    VITE_SOCKET_URL=
-   VITE_WEBRTC_STUN_URLS=stun:stun.l.google.com:19302
-   VITE_WEBRTC_TURN_URLS=
-   VITE_WEBRTC_TURN_USERNAME=
-   VITE_WEBRTC_TURN_CREDENTIAL=
    ```
 
    Server (`server/.env`, copy from `server/.env.example`):
@@ -74,9 +70,12 @@ Note: the server uses `better-sqlite3` (native module). If your Node version cha
    CLIENT_URL=http://localhost:5173
    VAPID_PUBLIC_KEY=
    VAPID_PRIVATE_KEY=
+   LIVEKIT_URL=
+   LIVEKIT_API_KEY=
+   LIVEKIT_API_SECRET=
    ```
 
-   A TURN server (`VITE_WEBRTC_TURN_URLS`) is required for calls to work reliably across NATs/firewalls in production; STUN alone is enough for local development.
+   Calls are disabled until `LIVEKIT_URL`/`LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET` are set to a [LiveKit Cloud](https://livekit.io) project's credentials (or a self-hosted LiveKit server's) - the server only mints access tokens, clients connect directly to LiveKit for media.
 
 ## Running the Application
 
@@ -218,7 +217,7 @@ GWS-Connect/
 
 ## Known Gaps
 
-- Calls use a peer-to-peer mesh topology (no SFU), so large group calls won't scale well past a handful of participants
+- Calls route through LiveKit (self-hosted or LiveKit Cloud), so call media is not end-to-end encrypted the way DM/channel text messages are
 - End-to-end encryption is implemented for DMs (ECDH + AES-GCM) but not yet enforced for channels
 - No automated test suite yet
 
